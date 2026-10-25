@@ -7,6 +7,11 @@ ENV NODE_ENV=production \
     DATA_DIR=/data \
     PORT=8787
 
+# The app runs on `node` alone. Remove the bundled package managers: they're unused at runtime and
+# are the main source of image CVEs.
+RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+      /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*
+
 WORKDIR /app
 COPY package.json ./
 COPY server/src ./server/src
