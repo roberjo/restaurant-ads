@@ -1,0 +1,8 @@
+.git
+.github
+data
+docs
+server/test
+node_modules
+*.md
+.env*

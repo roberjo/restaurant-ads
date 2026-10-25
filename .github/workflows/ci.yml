@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Syntax-check browser code
+        run: |
+          node --check console/app.js
+          node --check player/player.js
+      - name: Unit and API tests
+        run: npm test
+
+  shellcheck:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
+
+  container:
+    name: Container smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker build -t restaurant-ads:ci .
+      - name: Run and probe
+        run: |
+          docker run -d --name app -p 8787:8787 -e SEED_DEMO=1 restaurant-ads:ci
+          for i in $(seq 1 30); do curl -fsS http://localhost:8787/api/health && break; sleep 1; done
+          curl -fsS http://localhost:8787/api/health | grep -q '"ok":true'
+          curl -fsS -o /dev/null http://localhost:8787/console/
+          curl -fsS -o /dev/null http://localhost:8787/player/
+      - name: Logs
+        if: always()
+        run: docker logs app || true

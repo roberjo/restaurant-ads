@@ -19,6 +19,26 @@ const STATIC: Record<string, string> = {
   creatives: join(ROOT, 'creatives'),
 };
 
+const BASE_HEADERS = { 'referrer-policy': 'no-referrer', 'x-frame-options': 'DENY' };
+const OSM = 'https://tile.openstreetmap.org https://*.tile.openstreetmap.org';
+// Per-area Content-Security-Policy. User uploads are sandboxed so a crafted file can never run script.
+const STATIC_HEADERS: Record<string, Record<string, string>> = {
+  console: {
+    ...BASE_HEADERS,
+    'content-security-policy': `default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: https://unpkg.com ${OSM}; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+  },
+  // The player may talk to a server on another origin (?api=), so connect/img/media are open.
+  player: {
+    ...BASE_HEADERS,
+    'content-security-policy': `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; media-src * blob:; connect-src *; frame-ancestors 'none'; base-uri 'none'`,
+  },
+  creatives: { ...BASE_HEADERS, 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; sandbox`, 'cache-control': 'public, max-age=3600' },
+  uploads: { ...BASE_HEADERS, 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; sandbox`, 'cache-control': 'public, max-age=31536000, immutable' },
+};
+
+const startedAt = new Date().toISOString();
+const VERSION = process.env.APP_VERSION ?? 'dev';
+
 export function createApp(db: DatabaseSync, config: Config): Server {
   const router = new Router<AppCtx>();
   const app: App = { db, config, router };
@@ -47,10 +67,18 @@ export function createApp(db: DatabaseSync, config: Config): Server {
           return void res.end();
         }
         const [, top, ...rest] = url.pathname.split('/');
-        if (req.method === 'GET' && staticDirs[top as keyof typeof staticDirs]) {
-          return await serveStatic(res, staticDirs[top as keyof typeof staticDirs], decodeURIComponent(rest.join('/')));
+        if ((req.method === 'GET' || req.method === 'HEAD') && staticDirs[top as keyof typeof staticDirs]) {
+          let rel: string;
+          try { rel = decodeURIComponent(rest.join('/')); } catch { throw new HttpError(400, 'bad path'); }
+          return await serveStatic(res, staticDirs[top as keyof typeof staticDirs], rel, STATIC_HEADERS[top]);
         }
         throw new HttpError(404, 'not found');
+      }
+
+      Object.assign(cors, { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      if (url.pathname === '/api/health') {
+        db.prepare('SELECT 1').get();
+        return sendJson(res, 200, { ok: true, version: VERSION, startedAt }, cors);
       }
 
       const m = router.match(req.method ?? 'GET', url.pathname);

@@ -1,5 +1,10 @@
 # restaurant-ads
 
+[![CI](https://github.com/roberjo/restaurant-ads/actions/workflows/ci.yml/badge.svg)](https://github.com/roberjo/restaurant-ads/actions/workflows/ci.yml)
+[![Security](https://github.com/roberjo/restaurant-ads/actions/workflows/security.yml/badge.svg)](https://github.com/roberjo/restaurant-ads/actions/workflows/security.yml)
+[![CodeQL](https://github.com/roberjo/restaurant-ads/actions/workflows/codeql.yml/badge.svg)](https://github.com/roberjo/restaurant-ads/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/roberjo/restaurant-ads?include_prereleases&sort=semver)](https://github.com/roberjo/restaurant-ads/releases)
+
 A platform for running **local in-venue TV ad networks**. Independent operators (AV installers, local agencies) sign up restaurants, turn an existing TV into a free menu board with ads mixed in, sell local ads, and earn from pooled national demand. The platform earns from SaaS fees, payment fees and a take rate on programmatic ads.
 
 | Doc | What |
@@ -8,6 +13,8 @@ A platform for running **local in-venue TV ad networks**. Independent operators 
 | [docs/platform-model.md](docs/platform-model.md) | Why we're an operator platform, revenue model, franchise-law guardrails |
 | [docs/feasibility.md](docs/feasibility.md) | Background: competition, inventory, channels, unit economics |
 | [docs/architecture.md](docs/architecture.md) | How the code is organised and how money flows |
+| [docs/build-journal.md](docs/build-journal.md) | How the project was built, decisions and lessons |
+| [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) | Releases and security policy |
 
 ## Status: Phase 1 (Operator MVP) built
 
@@ -33,6 +40,12 @@ npm test         # unit and end-to-end API tests
 npm start        # real use: set ADMIN_EMAIL / ADMIN_PASSWORD on first run
 ```
 
+Or with Docker:
+
+```sh
+docker run -p 8787:8787 -v ads-data:/data -e SEED_DEMO=1 ghcr.io/roberjo/restaurant-ads:latest
+```
+
 Demo logins (password `demo1234`): `admin@platform.test`, `ops@austin.test`, `tacos@austin.test`, `dentist@austin.test`.
 
 **Try the full loop:**
@@ -51,6 +64,13 @@ Demo logins (password `demo1234`): `admin@platform.test`, `ops@austin.test`, `ta
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | create the first platform admin on an empty database |
 | `SEED_DEMO=1` | seed demo data on an empty database |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | enable advertiser card prepayment (webhook: `POST /api/stripe/webhook`, event `checkout.session.completed`) |
+
+## Development workflow
+
+- **CI** (`ci.yml`): tests, browser-code syntax checks, shellcheck, and a container build plus smoke test on every push and PR.
+- **Security** (`security.yml`, `codeql.yml`): CodeQL, Trivy (repo and image, fails on high/critical), gitleaks over the full history, dependency review on PRs, weekly scheduled scans. Dependabot keeps actions, the base image and packages current. All actions are pinned to commit SHAs.
+- **Releases** (`release.yml`): bump `version` in `package.json`, add a `CHANGELOG.md` section, then `git tag vX.Y.Z && git push --tags`. CI tests, publishes `ghcr.io/roberjo/restaurant-ads:{X.Y.Z, X.Y, latest}` with provenance and an SBOM, and creates the GitHub release.
+- **Versioning:** SemVer. Before 1.0, each minor version is a roadmap phase.
 
 ## Layout
 

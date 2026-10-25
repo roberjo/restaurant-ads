@@ -1,6 +1,10 @@
 {
   "name": "restaurant-ads",
+  "version": "0.1.0",
   "private": true,
+  "description": "Platform for running local in-venue TV ad networks: operators, venues, menu boards, ads, proof-of-play and revenue share.",
+  "license": "UNLICENSED",
+  "repository": "github:roberjo/restaurant-ads",
   "type": "module",
   "engines": { "node": ">=24" },
   "scripts": {

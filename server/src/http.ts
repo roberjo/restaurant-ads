@@ -85,7 +85,7 @@ export const MIME: Record<string, string> = {
   '.json': 'application/json',
 };
 
-export async function serveStatic(res: ServerResponse, baseDir: string, relPath: string): Promise<void> {
+export async function serveStatic(res: ServerResponse, baseDir: string, relPath: string, headers: Record<string, string> = {}): Promise<void> {
   const base = resolve(baseDir);
   const file = resolve(base, relPath || 'index.html');
   if (file !== base && !file.startsWith(base + sep)) return sendJson(res, 404, { error: 'not found' });
@@ -94,6 +94,7 @@ export async function serveStatic(res: ServerResponse, baseDir: string, relPath:
     res.writeHead(200, {
       'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
       'x-content-type-options': 'nosniff',
+      ...headers,
     });
     res.end(data);
   } catch {
