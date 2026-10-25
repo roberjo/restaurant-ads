@@ -13,7 +13,7 @@ export const TIER_RANK: Record<Tier, number> = {
 export interface Creative {
   id: string;
   url: string;
-  type: 'image' | 'video';
+  type: 'image' | 'video' | 'menu';
   durationSec: number;
 }
 

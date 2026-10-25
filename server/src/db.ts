@@ -1,101 +1,232 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { Campaign, Creative, Venue } from './scheduler.ts';
+import { hashPassword, newId } from './auth.ts';
+import type { Campaign, Creative } from './scheduler.ts';
+
+export const AD_CATEGORIES = [
+  'alcohol', 'auto', 'cannabis', 'education', 'entertainment', 'finance', 'gambling', 'health',
+  'home_services', 'political', 'real_estate', 'restaurant', 'retail', 'services', 'other',
+] as const;
+
+export const VENUE_CATEGORIES = ['qsr', 'casual_dining', 'bar', 'cafe', 'barbershop', 'laundromat', 'gym', 'retail', 'other'] as const;
 
 export function openDb(path = ':memory:'): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+    CREATE TABLE IF NOT EXISTS operators (
+      id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+      brand_color TEXT NOT NULL DEFAULT '#2563eb', logo_url TEXT,
+      default_cpm_cents INTEGER NOT NULL DEFAULT 1200,
+      min_budget_cents INTEGER NOT NULL DEFAULT 2500,
+      platform_fee_pct REAL NOT NULL DEFAULT 5,
+      network_opt_in INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS advertisers (
+      id TEXT PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id),
+      name TEXT NOT NULL, contact_email TEXT, created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS venues (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL,
-      timezone TEXT NOT NULL, category TEXT NOT NULL,
-      blocked_ad_categories TEXT NOT NULL DEFAULT '[]',
-      audience_multiplier REAL NOT NULL DEFAULT 1,
+      id TEXT PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id),
+      name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '',
+      lat REAL NOT NULL, lng REAL NOT NULL, timezone TEXT NOT NULL, category TEXT NOT NULL,
+      blocked_ad_categories TEXT NOT NULL DEFAULT '["cannabis"]',
+      audience_multiplier REAL NOT NULL DEFAULT 2,
       rev_share_pct REAL NOT NULL DEFAULT 20,
-      house_creatives TEXT NOT NULL DEFAULT '[]'
+      house_creatives TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL,
+      name TEXT NOT NULL, role TEXT NOT NULL,
+      operator_id TEXT REFERENCES operators(id), venue_id TEXT REFERENCES venues(id),
+      advertiser_id TEXT REFERENCES advertisers(id), created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS screens (
-      id TEXT PRIMARY KEY, venue_id TEXT NOT NULL REFERENCES venues(id),
-      name TEXT NOT NULL, last_heartbeat_at TEXT, last_status TEXT
+      id TEXT PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id),
+      venue_id TEXT NOT NULL REFERENCES venues(id), name TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'idle', ad_share_pct REAL NOT NULL DEFAULT 40,
+      loop_sec INTEGER NOT NULL DEFAULT 120, created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS devices (
+      id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL,
+      pairing_code TEXT UNIQUE, pairing_expires_at TEXT,
+      screen_id TEXT UNIQUE REFERENCES screens(id), operator_id TEXT REFERENCES operators(id),
+      last_seen_at TEXT, last_status TEXT, created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS menus (
+      venue_id TEXT PRIMARY KEY REFERENCES venues(id), operator_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT 'Menu', theme TEXT NOT NULL DEFAULT 'dark',
+      sections TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS campaigns (
-      id TEXT PRIMARY KEY, advertiser TEXT NOT NULL, tier TEXT NOT NULL,
+      id TEXT PRIMARY KEY, operator_id TEXT REFERENCES operators(id),
+      advertiser_id TEXT REFERENCES advertisers(id), name TEXT NOT NULL,
+      tier TEXT NOT NULL DEFAULT 'local', status TEXT NOT NULL DEFAULT 'draft',
+      payment_status TEXT NOT NULL DEFAULT 'unpaid',
       start_date TEXT NOT NULL, end_date TEXT NOT NULL,
       geo TEXT, venue_categories TEXT, dayparts TEXT,
-      ad_category TEXT NOT NULL, weight REAL NOT NULL DEFAULT 1,
-      max_sov_pct REAL NOT NULL DEFAULT 25, cpm_usd REAL NOT NULL DEFAULT 0,
-      creatives TEXT NOT NULL DEFAULT '[]'
+      ad_category TEXT NOT NULL DEFAULT 'other', weight REAL NOT NULL DEFAULT 1,
+      max_sov_pct REAL NOT NULL DEFAULT 20,
+      cpm_cents INTEGER NOT NULL, budget_cents INTEGER NOT NULL,
+      spent_micros INTEGER NOT NULL DEFAULT 0,
+      stripe_session_id TEXT, review_note TEXT, created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS creatives (
+      id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      url TEXT NOT NULL, type TEXT NOT NULL, duration_sec REAL NOT NULL, created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS pop_events (
-      id TEXT PRIMARY KEY, screen_id TEXT NOT NULL, creative_id TEXT NOT NULL,
-      campaign_id TEXT, played_at TEXT NOT NULL, duration_sec REAL NOT NULL,
+      id TEXT PRIMARY KEY, device_id TEXT NOT NULL, screen_id TEXT NOT NULL, venue_id TEXT NOT NULL,
+      operator_id TEXT NOT NULL, campaign_id TEXT, creative_id TEXT NOT NULL,
+      played_at TEXT NOT NULL, duration_sec REAL NOT NULL, impressions REAL NOT NULL DEFAULT 0,
+      gross_micros INTEGER NOT NULL DEFAULT 0, platform_micros INTEGER NOT NULL DEFAULT 0,
+      operator_micros INTEGER NOT NULL DEFAULT 0, venue_micros INTEGER NOT NULL DEFAULT 0,
       received_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS pop_operator_time ON pop_events (operator_id, played_at);
+    CREATE INDEX IF NOT EXISTS pop_campaign ON pop_events (campaign_id);
+    CREATE INDEX IF NOT EXISTS pop_venue_time ON pop_events (venue_id, played_at);
+
+    INSERT OR IGNORE INTO settings VALUES ('network_take_pct', '20');
   `);
   return db;
 }
 
-type Row = Record<string, any>;
+export function getSetting(db: DatabaseSync, key: string): string | null {
+  const r = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key) as any;
+  return r?.value ?? null;
+}
 
-export function rowToVenue(r: Row): Venue {
+export const nowIso = () => new Date().toISOString();
+
+const JSON_COLS = new Set([
+  'blocked_ad_categories', 'house_creatives', 'geo', 'venue_categories', 'dayparts', 'sections', 'last_status',
+]);
+const BOOL_COLS = new Set(['network_opt_in']);
+const HIDDEN_COLS = new Set(['password_hash', 'secret_hash']);
+
+/** snake_case row → camelCase API object, parsing JSON columns. */
+export function toApi<T = any>(row: any): T {
+  if (!row) return row;
+  const out: any = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (HIDDEN_COLS.has(k)) continue;
+    const key = k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    out[key] = JSON_COLS.has(k) && typeof v === 'string' ? JSON.parse(v) : BOOL_COLS.has(k) ? !!v : v;
+  }
+  return out;
+}
+
+export function campaignForScheduler(db: DatabaseSync, row: any): Campaign {
+  const creatives = (db.prepare(`SELECT * FROM creatives WHERE campaign_id = ? ORDER BY created_at`).all(row.id) as any[])
+    .map((c): Creative => ({ id: c.id, url: c.url, type: c.type, durationSec: c.duration_sec }));
   return {
-    id: r.id,
-    name: r.name,
-    lat: r.lat,
-    lng: r.lng,
-    timezone: r.timezone,
-    category: r.category,
-    blockedAdCategories: JSON.parse(r.blocked_ad_categories),
-    audienceMultiplier: r.audience_multiplier,
-    houseCreatives: JSON.parse(r.house_creatives),
+    id: row.id,
+    advertiser: row.advertiser_id ?? '',
+    tier: row.tier,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    geo: row.geo ? JSON.parse(row.geo) : null,
+    venueCategories: row.venue_categories ? JSON.parse(row.venue_categories) : null,
+    dayparts: row.dayparts ? JSON.parse(row.dayparts) : null,
+    adCategory: row.ad_category,
+    weight: row.weight,
+    maxSovPct: row.max_sov_pct,
+    creatives,
   };
 }
 
-export function rowToCampaign(r: Row): Campaign {
-  return {
-    id: r.id,
-    advertiser: r.advertiser,
-    tier: r.tier,
-    startDate: r.start_date,
-    endDate: r.end_date,
-    geo: r.geo ? JSON.parse(r.geo) : null,
-    venueCategories: r.venue_categories ? JSON.parse(r.venue_categories) : null,
-    dayparts: r.dayparts ? JSON.parse(r.dayparts) : null,
-    adCategory: r.ad_category,
-    weight: r.weight,
-    maxSovPct: r.max_sov_pct,
-    creatives: JSON.parse(r.creatives),
-  };
+export function isEmpty(db: DatabaseSync): boolean {
+  return !(db.prepare(`SELECT 1 FROM users LIMIT 1`).get());
 }
 
-const svg = (id: string, durationSec = 10): Creative => ({
-  id,
-  url: `/creatives/${id}.svg`,
-  type: 'image',
-  durationSec,
-});
-
-// Demo data: a small cluster of venues in Austin, TX.
-export function seed(db: DatabaseSync): void {
-  const venue = db.prepare(
-    `INSERT OR REPLACE INTO venues VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+export function createUser(db: DatabaseSync, u: {
+  email: string; password: string; name: string; role: string;
+  operatorId?: string | null; venueId?: string | null; advertiserId?: string | null;
+}): string {
+  const id = newId('usr');
+  db.prepare(`INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    id, u.email.trim(), hashPassword(u.password), u.name, u.role,
+    u.operatorId ?? null, u.venueId ?? null, u.advertiserId ?? null, nowIso(),
   );
-  venue.run('v-tacos', 'South Congress Tacos', 30.2496, -97.7495, 'America/Chicago', 'qsr',
-    JSON.stringify(['alcohol']), 3, 20, JSON.stringify([svg('house-menu', 15), svg('house-weather', 10)]));
-  venue.run('v-pub', 'Eastside Pub', 30.2627, -97.7270, 'America/Chicago', 'bar',
-    '[]', 5, 25, JSON.stringify([svg('house-trivia', 15)]));
+  return id;
+}
 
-  const screen = db.prepare(`INSERT OR REPLACE INTO screens (id, venue_id, name) VALUES (?, ?, ?)`);
-  screen.run('s-tacos-counter', 'v-tacos', 'Counter');
-  screen.run('s-pub-bar', 'v-pub', 'Over the bar');
+export const DEMO_PASSWORD = 'demo1234';
 
+/** Demo tenant: an Austin operator with two venues, a menu board, local and network campaigns. */
+export function seedDemo(db: DatabaseSync): void {
+  const t = nowIso();
   const year = new Date().getFullYear();
-  const campaign = db.prepare(`INSERT OR REPLACE INTO campaigns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  campaign.run('c-dentist', 'Bright Smile Dental', 'local', `${year}-01-01`, `${year}-12-31`,
-    JSON.stringify({ lat: 30.25, lng: -97.75, radiusMiles: 3 }), null, null, 'health', 1, 25, 12,
-    JSON.stringify([svg('ad-dentist')]));
-  campaign.run('c-brewery', 'Hill Country Brewing', 'local', `${year}-01-01`, `${year}-12-31`,
-    JSON.stringify({ lat: 30.26, lng: -97.74, radiusMiles: 5 }), null,
-    JSON.stringify([{ startHour: 16, endHour: 2 }]), 'alcohol', 1, 25, 15,
-    JSON.stringify([svg('ad-brewery')]));
-  campaign.run('c-carwash', 'National Car Wash Co.', 'programmatic', `${year}-01-01`, `${year}-12-31`,
-    null, null, null, 'auto', 1, 20, 8, JSON.stringify([svg('ad-carwash')]));
+  const svg = (id: string, durationSec = 10) => ({ id, url: `/creatives/${id}.svg`, type: 'image', durationSec });
+
+  db.prepare(`INSERT INTO operators (id, slug, name, brand_color, default_cpm_cents, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run('op_austin', 'austin', 'Austin Screen Co.', '#0f766e', 1200, t);
+
+  const venue = db.prepare(`INSERT INTO venues VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  venue.run('ven_tacos', 'op_austin', 'South Congress Tacos', '1500 S Congress Ave', 30.2496, -97.7495, 'America/Chicago',
+    'qsr', JSON.stringify(['alcohol', 'cannabis']), 3, 20, JSON.stringify([svg('house-weather', 10)]), t);
+  venue.run('ven_pub', 'op_austin', 'Eastside Pub', '1100 E 6th St', 30.2627, -97.7270, 'America/Chicago',
+    'bar', JSON.stringify(['cannabis']), 5, 25, JSON.stringify([svg('house-trivia', 15)]), t);
+
+  const screen = db.prepare(`INSERT INTO screens VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  screen.run('scr_tacos_menu', 'op_austin', 'ven_tacos', 'Menu board (counter)', 'menu', 20, 120, t);
+  screen.run('scr_pub_bar', 'op_austin', 'ven_pub', 'Over the bar', 'idle', 40, 120, t);
+
+  db.prepare(`INSERT INTO menus VALUES (?, ?, ?, ?, ?, ?)`).run('ven_tacos', 'op_austin', 'South Congress Tacos', 'dark',
+    JSON.stringify([
+      { name: 'Tacos', items: [
+        { name: 'Brisket', price: '4.50', description: 'Smoked brisket, onion, cilantro' },
+        { name: 'Al Pastor', price: '3.75', description: 'Pork, pineapple, salsa verde' },
+        { name: 'Migas', price: '3.50', description: 'Egg, tortilla chips, cheese', soldOut: true },
+      ] },
+      { name: 'Sides & Drinks', items: [
+        { name: 'Chips & Queso', price: '5.00' },
+        { name: 'Elote', price: '4.00' },
+        { name: 'Horchata', price: '3.00' },
+      ] },
+    ]), t);
+
+  db.prepare(`INSERT INTO advertisers VALUES (?, ?, ?, ?, ?)`).run('adv_dentist', 'op_austin', 'Bright Smile Dental', 'dentist@austin.test', t);
+  db.prepare(`INSERT INTO advertisers VALUES (?, ?, ?, ?, ?)`).run('adv_brewery', 'op_austin', 'Hill Country Brewing', 'brewery@austin.test', t);
+
+  const campaign = db.prepare(`
+    INSERT INTO campaigns (id, operator_id, advertiser_id, name, tier, status, payment_status, start_date, end_date,
+      geo, venue_categories, dayparts, ad_category, max_sov_pct, cpm_cents, budget_cents, created_at)
+    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const creative = db.prepare(`INSERT INTO creatives VALUES (?, ?, ?, 'image', 10, ?)`);
+  campaign.run('cmp_dentist', 'op_austin', 'adv_dentist', 'New patient special', 'local', 'paid', `${year}-01-01`, `${year}-12-31`,
+    JSON.stringify({ lat: 30.25, lng: -97.75, radiusMiles: 3 }), null, null, 'health', 20, 1200, 50_000, t);
+  creative.run('cr_dentist', 'cmp_dentist', '/creatives/ad-dentist.svg', t);
+  campaign.run('cmp_brewery', 'op_austin', 'adv_brewery', 'Happy hour', 'local', 'invoiced', `${year}-01-01`, `${year}-12-31`,
+    JSON.stringify({ lat: 30.26, lng: -97.74, radiusMiles: 5 }), null, JSON.stringify([{ startHour: 16, endHour: 2 }]),
+    'alcohol', 20, 1500, 30_000, t);
+  creative.run('cr_brewery', 'cmp_brewery', '/creatives/ad-brewery.svg', t);
+  campaign.run('cmp_carwash', null, null, 'National Car Wash Co. (network)', 'programmatic', 'invoiced', `${year}-01-01`, `${year}-12-31`,
+    null, null, null, 'auto', 15, 800, 1_000_000, t);
+  creative.run('cr_carwash', 'cmp_carwash', '/creatives/ad-carwash.svg', t);
+
+  createUser(db, { email: 'admin@platform.test', password: DEMO_PASSWORD, name: 'Platform Admin', role: 'platform_admin' });
+  createUser(db, { email: 'ops@austin.test', password: DEMO_PASSWORD, name: 'Alex (Austin Screen Co.)', role: 'operator_admin', operatorId: 'op_austin' });
+  createUser(db, { email: 'tacos@austin.test', password: DEMO_PASSWORD, name: 'Maria (SoCo Tacos)', role: 'venue_manager', operatorId: 'op_austin', venueId: 'ven_tacos' });
+  createUser(db, { email: 'dentist@austin.test', password: DEMO_PASSWORD, name: 'Dr. Lee', role: 'advertiser', operatorId: 'op_austin', advertiserId: 'adv_dentist' });
 }

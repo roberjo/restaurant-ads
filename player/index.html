@@ -5,20 +5,44 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Screen Player</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+    :root { --brand: #2563eb; }
+    html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden; cursor: none;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
-    #stage img, #stage video { width: 100%; height: 100%; object-fit: contain; }
-    #debug { position: fixed; bottom: 8px; right: 12px; color: #888; font: 14px/1.2 system-ui, sans-serif; }
+    #stage > img, #stage > video { width: 100%; height: 100%; object-fit: contain; }
+    #debug { position: fixed; bottom: 0.6vw; right: 1vw; color: #888; font-size: 0.8vw; }
+
+    .pair { text-align: center; }
+    .pair h1 { font-size: 2.4vw; font-weight: 500; margin: 0 0 2vw; color: #ccc; }
+    .pair .code { font: 700 9vw/1 ui-monospace, Menlo, monospace; letter-spacing: 0.15em; color: #fff;
+      padding: 1.5vw 3vw; border: 0.3vw solid var(--brand); border-radius: 1.5vw; display: inline-block; }
+    .pair p { font-size: 1.6vw; color: #999; margin-top: 2.4vw; }
+
+    .menu { position: absolute; inset: 0; padding: 3.5vw 4.5vw; box-sizing: border-box; display: flex; flex-direction: column; }
+    .menu.dark { background: #111; color: #f5f5f5; }
+    .menu.light { background: #faf7f2; color: #1c1917; }
+    .menu.brand { background: var(--brand); color: #fff; }
+    .menu h1 { font-size: 4.2vw; margin: 0 0 2.5vw; letter-spacing: -0.02em; }
+    .menu .cols { display: grid; grid-template-columns: repeat(var(--cols), 1fr); gap: 4vw; flex: 1; align-content: start; }
+    .menu h2 { font-size: 2.2vw; margin: 0 0 1.2vw; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.75;
+      border-bottom: 0.15vw solid currentColor; padding-bottom: 0.6vw; }
+    .menu .item { display: flex; justify-content: space-between; gap: 2vw; margin-bottom: 1.3vw; }
+    .menu .name { font-size: 2vw; font-weight: 600; }
+    .menu .desc { font-size: 1.25vw; opacity: 0.7; margin-top: 0.2vw; }
+    .menu .price { font-size: 2vw; font-weight: 700; white-space: nowrap; }
+    .menu .sold { opacity: 0.4; }
+    .menu .sold .name { text-decoration: line-through; }
+    .menu .badge { font-size: 1vw; font-weight: 700; border: 0.12vw solid currentColor; border-radius: 0.4vw;
+      padding: 0.1vw 0.5vw; margin-left: 0.8vw; vertical-align: middle; text-decoration: none; display: inline-block; }
   </style>
 </head>
 <body>
   <div id="stage"></div>
   <div id="debug" hidden></div>
   <script>
-    // Single web player for Tizen/webOS signage browsers, Android WebView kiosks and desktop browsers.
-    // ?screen=<id>  &api=<base url>  &debug=1
+    // Single web player for Tizen/webOS signage browsers, Android/Fire TV kiosk WebViews and desktop browsers.
+    // Query params: api=<server base url> (default: same origin), debug=1
     const params = new URLSearchParams(location.search);
-    const SCREEN = params.get('screen');
     const API = params.get('api') || '';
     const stage = document.getElementById('stage');
     const debug = document.getElementById('debug');
@@ -27,30 +51,84 @@
     const store = {
       get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
       set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+      del(k) { try { localStorage.removeItem(k); } catch {} },
     };
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+    let device = store.get('device', null);
     let playlist = store.get('playlist', null);
+    let menu = store.get('menu', null);
     let lastFetch = 0;
     let played = 0;
+    let paired = !!playlist;
 
-    async function refreshPlaylist() {
-      try {
-        const r = await fetch(`${API}/api/screens/${SCREEN}/playlist`);
-        if (!r.ok) throw new Error(r.status);
-        playlist = await r.json();
-        lastFetch = Date.now();
-        store.set('playlist', playlist);
-        prefetch(playlist.slots);
-      } catch (e) {
-        console.warn('playlist fetch failed, using cached', e);
+    async function api(path, opts = {}) {
+      const r = await fetch(API + path, {
+        ...opts,
+        headers: { 'content-type': 'application/json', authorization: `Device ${device.id}.${device.secret}`, ...(opts.headers || {}) },
+      });
+      if (r.status === 401) { store.del('device'); device = null; throw new Error('unauthorized'); }
+      if (r.status === 409) { paired = false; throw new Error('unpaired'); }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }
+
+    async function ensureDevice() {
+      while (!device) {
+        try {
+          const r = await fetch(`${API}/api/device/register`, { method: 'POST' });
+          if (!r.ok) throw new Error(r.status);
+          const b = await r.json();
+          device = { id: b.deviceId, secret: b.deviceSecret };
+          store.set('device', device);
+        } catch { await sleep(10_000); }
       }
     }
 
-    // Warm the HTTP cache (and Cache API when available) so playback survives network drops.
+    function applyBrand(brand) {
+      if (brand?.color) document.documentElement.style.setProperty('--brand', brand.color);
+    }
+
+    // Show the pairing code until an operator claims this device in the console.
+    async function pairingLoop() {
+      for (;;) {
+        await ensureDevice();
+        try {
+          const s = await api('/api/device/state');
+          if (s.paired) { applyBrand(s.brand); paired = true; return; }
+          stage.innerHTML = `<div class="pair"><h1>Pair this screen</h1><div class="code">${esc(s.pairingCode)}</div>
+            <p>In your operator console, open <b>Screens → Pair</b> and enter this code.</p></div>`;
+        } catch (e) {
+          if (!device) continue;
+          stage.innerHTML = `<div class="pair"><h1>Connecting…</h1><p>${esc(e.message)}</p></div>`;
+        }
+        await sleep(5_000);
+      }
+    }
+
+    async function refreshPlaylist() {
+      try {
+        playlist = await api('/api/device/playlist');
+        lastFetch = Date.now();
+        store.set('playlist', playlist);
+        prefetch(playlist.slots);
+        if (playlist.slots.some((s) => s.type === 'menu')) {
+          menu = await api('/api/device/menu');
+          store.set('menu', menu);
+        }
+      } catch (e) {
+        if (!paired || !device) { store.del('playlist'); playlist = null; return; }
+        console.warn('playlist fetch failed, using cached', e);
+        lastFetch = Date.now() - ((playlist?.ttlSec ?? 300) - 30) * 1000; // retry in ~30s
+      }
+    }
+
+    // Warm the Cache API / HTTP cache so playback survives network drops.
     async function prefetch(slots) {
-      const urls = [...new Set(slots.map((s) => API + s.url))];
+      const urls = [...new Set(slots.filter((s) => s.type !== 'menu').map((s) => API + s.url))];
       if ('caches' in window) {
-        try { (await caches.open('creatives')).addAll(urls); return; } catch {}
+        try { await (await caches.open('creatives')).addAll(urls); return; } catch {}
       }
       urls.forEach((u) => fetch(u).catch(() => {}));
     }
@@ -58,83 +136,98 @@
     function logPlay(slot, startedAt) {
       const q = store.get('popQueue', []);
       q.push({
-        id: `${SCREEN}-${startedAt}-${slot.creativeId}`,
-        screenId: SCREEN,
+        id: `${startedAt}-${slot.creativeId}`,
         creativeId: slot.creativeId,
         campaignId: slot.campaignId,
         playedAt: new Date(startedAt).toISOString(),
-        durationSec: (Date.now() - startedAt) / 1000,
+        durationSec: Math.round((Date.now() - startedAt) / 100) / 10,
       });
       store.set('popQueue', q.slice(-5000));
       played++;
     }
 
     async function flushPop() {
+      if (!device || !paired) return;
       const q = store.get('popQueue', []);
       if (!q.length) return;
       const batch = q.slice(0, 500);
       try {
-        const r = await fetch(`${API}/api/pop`, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ events: batch }),
-        });
-        if (r.ok) store.set('popQueue', store.get('popQueue', []).slice(batch.length));
+        await api('/api/device/pop', { method: 'POST', body: JSON.stringify({ events: batch }) });
+        store.set('popQueue', store.get('popQueue', []).slice(batch.length));
       } catch {}
     }
 
     async function heartbeat() {
+      if (!device) return;
       try {
-        await fetch(`${API}/api/screens/${SCREEN}/heartbeat`, {
-          method: 'POST', headers: { 'content-type': 'application/json' },
+        await api('/api/device/heartbeat', {
+          method: 'POST',
           body: JSON.stringify({ ua: navigator.userAgent, played, queued: store.get('popQueue', []).length, w: innerWidth, h: innerHeight }),
         });
       } catch {}
     }
 
+    function renderMenu(m) {
+      const sections = m?.sections ?? [];
+      if (m?.brandColor) document.documentElement.style.setProperty('--brand', m.brandColor);
+      const cols = Math.min(3, Math.max(1, sections.length));
+      return `<div class="menu ${esc(m?.theme || 'dark')}" style="--cols:${cols}">
+        <h1>${esc(m?.title)}</h1>
+        <div class="cols">${sections.map((s) => `<div><h2>${esc(s.name)}</h2>${s.items.map((it) => `
+          <div class="item ${it.soldOut ? 'sold' : ''}">
+            <div><div class="name">${esc(it.name)}${it.soldOut ? '<span class="badge">SOLD OUT</span>' : ''}</div>
+            ${it.description ? `<div class="desc">${esc(it.description)}</div>` : ''}</div>
+            <div class="price">${it.price ? '$' + esc(it.price) : ''}</div>
+          </div>`).join('')}</div>`).join('')}</div></div>`;
+    }
+
     function show(slot) {
       return new Promise((resolve) => {
         const startedAt = Date.now();
-        let el;
         let timer;
-        const done = (ok) => {
-          clearTimeout(timer);
-          if (ok) logPlay(slot, startedAt);
-          resolve();
-        };
-        if (slot.type === 'video') {
-          el = document.createElement('video');
+        const done = (ok) => { clearTimeout(timer); if (ok) logPlay(slot, startedAt); resolve(); };
+        if (slot.type === 'menu') {
+          stage.innerHTML = renderMenu(menu);
+          timer = setTimeout(() => done(true), slot.durationSec * 1000);
+        } else if (slot.type === 'video') {
+          const el = document.createElement('video');
           Object.assign(el, { src: API + slot.url, muted: true, autoplay: true, playsInline: true });
           el.onended = () => done(true);
           el.onerror = () => done(false);
           timer = setTimeout(() => done(true), (slot.durationSec + 2) * 1000);
+          stage.replaceChildren(el);
         } else {
-          el = new Image();
+          const el = new Image();
           el.src = API + slot.url;
-          el.onerror = () => done(false);
+          el.onerror = () => { clearTimeout(timer); setTimeout(() => done(false), 1000); };
           timer = setTimeout(() => done(true), slot.durationSec * 1000);
+          stage.replaceChildren(el);
         }
-        stage.replaceChildren(el);
-        debug.textContent = `${SCREEN} · ${slot.campaignId ?? 'house'} · ${slot.creativeId} · played ${played}`;
+        debug.textContent = `${playlist?.screenId} · ${slot.campaignId ?? 'house'} · ${slot.creativeId} · played ${played}`;
       });
     }
 
-    async function loop() {
+    async function main() {
+      setInterval(flushPop, 30_000);
+      setInterval(heartbeat, 60_000);
       for (;;) {
+        if (!paired || !device) await pairingLoop();
+        heartbeat();
         if (!playlist || Date.now() - lastFetch > (playlist.ttlSec ?? 300) * 1000) await refreshPlaylist();
         const slots = playlist?.slots ?? [];
-        if (!slots.length) { await new Promise((r) => setTimeout(r, 10_000)); continue; }
-        for (const slot of slots) await show(slot);
+        if (!slots.length) {
+          stage.innerHTML = '';
+          await sleep(10_000);
+          continue;
+        }
+        for (const slot of slots) {
+          await show(slot);
+          if (!paired || !device) break;
+        }
       }
     }
 
-    if (!SCREEN) {
-      document.body.style.cursor = 'auto';
-      stage.innerHTML = '<p style="color:#fff;font:24px system-ui">Missing ?screen=&lt;id&gt;</p>';
-    } else {
-      setInterval(flushPop, 30_000);
-      setInterval(heartbeat, 60_000);
-      heartbeat();
-      loop();
-    }
+    main();
   </script>
 </body>
 </html>
