@@ -2,7 +2,9 @@
 
 Tools and implementations for an in-venue TV ad network. National, regional and local ad demand is delivered to screens in restaurants and other local businesses.
 
-**Start with [docs/feasibility.md](docs/feasibility.md)**, a candid look at competitors, the inventory problem, channels (Roku/Samsung/etc.) and unit economics. Then read [docs/architecture.md](docs/architecture.md).
+**Direction:** we build the platform that independent operators use to run local networks; we don't run one ourselves. See [docs/platform-model.md](docs/platform-model.md).
+
+Background: [docs/feasibility.md](docs/feasibility.md), a candid look at competitors, the inventory problem, channels (Roku/Samsung/etc.) and unit economics. Then read [docs/architecture.md](docs/architecture.md).
 
 ## What's here
 
