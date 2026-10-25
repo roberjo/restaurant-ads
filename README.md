@@ -36,7 +36,7 @@ A platform for running **local in-venue TV ad networks**. Independent operators 
 
 ## Run
 
-Requires Node 24+. There are no dependencies to install.
+Requires Node 24+ (the container image and releases use Node 26). There are no dependencies to install.
 
 ```sh
 npm run demo     # demo data in ./data/demo → http://localhost:8787

@@ -4,6 +4,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+- Container image runs on Node 26 (was Node 24). CI tests on Node 24 and 26; releases are tested on 26. Node 24 remains supported for running from source.
+
 ## [0.2.0] - 2026-10-25
 
 Phase 2 (part 1): money movement and pilot hardening. See [docs/roadmap.md](docs/roadmap.md#phase-2-pilot-hardening-and-money-movement-1--5-operators).
