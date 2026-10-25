@@ -1,0 +1,11 @@
+{
+  "name": "restaurant-ads",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node server/src/server.ts",
+    "dev": "node --watch server/src/server.ts",
+    "test": "node --test server/test/*.test.ts"
+  }
+}

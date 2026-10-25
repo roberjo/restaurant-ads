@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Screen Player</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+    #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+    #stage img, #stage video { width: 100%; height: 100%; object-fit: contain; }
+    #debug { position: fixed; bottom: 8px; right: 12px; color: #888; font: 14px/1.2 system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="debug" hidden></div>
+  <script>
+    // Single web player for Tizen/webOS signage browsers, Android WebView kiosks and desktop browsers.
+    // ?screen=<id>  &api=<base url>  &debug=1
+    const params = new URLSearchParams(location.search);
+    const SCREEN = params.get('screen');
+    const API = params.get('api') || '';
+    const stage = document.getElementById('stage');
+    const debug = document.getElementById('debug');
+    debug.hidden = !params.get('debug');
+
+    const store = {
+      get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+      set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+    };
+
+    let playlist = store.get('playlist', null);
+    let lastFetch = 0;
+    let played = 0;
+
+    async function refreshPlaylist() {
+      try {
+        const r = await fetch(`${API}/api/screens/${SCREEN}/playlist`);
+        if (!r.ok) throw new Error(r.status);
+        playlist = await r.json();
+        lastFetch = Date.now();
+        store.set('playlist', playlist);
+        prefetch(playlist.slots);
+      } catch (e) {
+        console.warn('playlist fetch failed, using cached', e);
+      }
+    }
+
+    // Warm the HTTP cache (and Cache API when available) so playback survives network drops.
+    async function prefetch(slots) {
+      const urls = [...new Set(slots.map((s) => API + s.url))];
+      if ('caches' in window) {
+        try { (await caches.open('creatives')).addAll(urls); return; } catch {}
+      }
+      urls.forEach((u) => fetch(u).catch(() => {}));
+    }
+
+    function logPlay(slot, startedAt) {
+      const q = store.get('popQueue', []);
+      q.push({
+        id: `${SCREEN}-${startedAt}-${slot.creativeId}`,
+        screenId: SCREEN,
+        creativeId: slot.creativeId,
+        campaignId: slot.campaignId,
+        playedAt: new Date(startedAt).toISOString(),
+        durationSec: (Date.now() - startedAt) / 1000,
+      });
+      store.set('popQueue', q.slice(-5000));
+      played++;
+    }
+
+    async function flushPop() {
+      const q = store.get('popQueue', []);
+      if (!q.length) return;
+      const batch = q.slice(0, 500);
+      try {
+        const r = await fetch(`${API}/api/pop`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ events: batch }),
+        });
+        if (r.ok) store.set('popQueue', store.get('popQueue', []).slice(batch.length));
+      } catch {}
+    }
+
+    async function heartbeat() {
+      try {
+        await fetch(`${API}/api/screens/${SCREEN}/heartbeat`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ua: navigator.userAgent, played, queued: store.get('popQueue', []).length, w: innerWidth, h: innerHeight }),
+        });
+      } catch {}
+    }
+
+    function show(slot) {
+      return new Promise((resolve) => {
+        const startedAt = Date.now();
+        let el;
+        let timer;
+        const done = (ok) => {
+          clearTimeout(timer);
+          if (ok) logPlay(slot, startedAt);
+          resolve();
+        };
+        if (slot.type === 'video') {
+          el = document.createElement('video');
+          Object.assign(el, { src: API + slot.url, muted: true, autoplay: true, playsInline: true });
+          el.onended = () => done(true);
+          el.onerror = () => done(false);
+          timer = setTimeout(() => done(true), (slot.durationSec + 2) * 1000);
+        } else {
+          el = new Image();
+          el.src = API + slot.url;
+          el.onerror = () => done(false);
+          timer = setTimeout(() => done(true), slot.durationSec * 1000);
+        }
+        stage.replaceChildren(el);
+        debug.textContent = `${SCREEN} · ${slot.campaignId ?? 'house'} · ${slot.creativeId} · played ${played}`;
+      });
+    }
+
+    async function loop() {
+      for (;;) {
+        if (!playlist || Date.now() - lastFetch > (playlist.ttlSec ?? 300) * 1000) await refreshPlaylist();
+        const slots = playlist?.slots ?? [];
+        if (!slots.length) { await new Promise((r) => setTimeout(r, 10_000)); continue; }
+        for (const slot of slots) await show(slot);
+      }
+    }
+
+    if (!SCREEN) {
+      document.body.style.cursor = 'auto';
+      stage.innerHTML = '<p style="color:#fff;font:24px system-ui">Missing ?screen=&lt;id&gt;</p>';
+    } else {
+      setInterval(flushPop, 30_000);
+      setInterval(heartbeat, 60_000);
+      heartbeat();
+      loop();
+    }
+  </script>
+</body>
+</html>
