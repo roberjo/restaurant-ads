@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:24-alpine
+FROM node:26-alpine
 
 ARG APP_VERSION=dev
 ENV NODE_ENV=production \
