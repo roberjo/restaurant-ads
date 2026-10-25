@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-25
+
 ### Changed
 - Container image runs on Node 26 (was Node 24). CI tests on Node 24 and 26; releases are tested on 26. Node 24 remains supported for running from source.
 
@@ -49,6 +51,7 @@ Phase 1: Operator MVP. See [docs/roadmap.md](docs/roadmap.md).
 ### Security
 - Content-Security-Policy per area (strict for the console, sandboxed for uploads and creatives), `X-Frame-Options: DENY`, `nosniff`, `no-store` on the API, Subresource Integrity on CDN assets.
 
-[Unreleased]: https://github.com/roberjo/restaurant-ads/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/roberjo/restaurant-ads/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/roberjo/restaurant-ads/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/roberjo/restaurant-ads/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/roberjo/restaurant-ads/releases/tag/v0.1.0
