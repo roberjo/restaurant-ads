@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-25
+
+Phase 2 (part 1): money movement and pilot hardening. See [docs/roadmap.md](docs/roadmap.md#phase-2-pilot-hardening-and-money-movement-1--5-operators).
+
+### Added
+- **Stripe Connect payouts:** Express onboarding for operators and venues, payout runs that pay each party's share of card-paid campaigns exactly once, $1 minimum with sub-cent carry-forward, idempotent transfers, retry of failed/awaiting payouts, payout history per role.
+- **Square POS menu sync:** OAuth connect with signed state, tokens encrypted at rest (AES-256-GCM), catalog → menu sections with prices and sold-out items, token refresh, signed webhooks (`catalog.version.updated`), and a 30-minute background resync.
+- **Ad templates:** bold / split / photo layouts rendered to 1920×1080 SVG with live preview in the console, for campaign ads and venue promos.
+- **Venue open hours** (including past-midnight ranges): offline alerts only while open, reach estimates from real hours, and a TV power schedule.
+- **Raspberry Pi player kit** (`scripts/pi`): installer, kiosk autostart, and an HDMI-CEC agent that powers the TV on/off with venue hours.
+- **Remote screen commands:** identify, reload, clear cache, refresh playlist.
+- **Email notifications** via a transactional outbox (Resend): campaign submitted/approved/rejected, screen offline (once per outage), payout sent.
+- **Audit log** of every authenticated change, including refused attempts, with a console view.
+- Background job runner; schema migrations (`PRAGMA user_version`); `/api/device/power`.
+- Operator report shows platform fees owed on campaigns the operator invoiced directly.
+
+### Fixed
+- Payout status no longer offers onboarding when Stripe isn't configured.
+- Outbound email now uses the configured HTTP client.
+
 ## [0.1.0] - 2026-10-25
 
 Phase 1: Operator MVP. See [docs/roadmap.md](docs/roadmap.md).
@@ -26,5 +46,6 @@ Phase 1: Operator MVP. See [docs/roadmap.md](docs/roadmap.md).
 ### Security
 - Content-Security-Policy per area (strict for the console, sandboxed for uploads and creatives), `X-Frame-Options: DENY`, `nosniff`, `no-store` on the API, Subresource Integrity on CDN assets.
 
-[Unreleased]: https://github.com/roberjo/restaurant-ads/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/roberjo/restaurant-ads/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/roberjo/restaurant-ads/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/roberjo/restaurant-ads/releases/tag/v0.1.0

@@ -5,7 +5,10 @@ import { AD_CATEGORIES, VENUE_CATEGORIES, nowIso, toApi } from '../db.ts';
 import { HttpError } from '../http.ts';
 import { MICROS_PER_CENT, microsToUsd } from '../ledger.ts';
 import { createCheckoutSession, verifyWebhook } from '../stripe.ts';
-import { saveUpload } from '../uploads.ts';
+import { saveGeneratedSvg, saveUpload } from '../uploads.ts';
+import { renderTemplate } from '../templates.ts';
+import { advertiserEmails, enqueueEmail, operatorAdminEmails, platformAdminEmails } from '../notify.ts';
+import { avgDailyOpenHours } from '../hours.ts';
 import type { App } from '../app-types.ts';
 import { date, int, num, oneOf, str, stringList } from '../validate.ts';
 
@@ -181,6 +184,23 @@ export function registerCampaigns({ db, router, config }: App): void {
     return reload(c.id);
   });
 
+  router.post('/api/templates/preview', (ctx) => {
+    requireUser(ctx);
+    return { svg: renderTemplate(ctx.body) };
+  });
+
+  router.post('/api/campaigns/:id/creatives/template', (ctx) => {
+    const user = requireUser(ctx);
+    const c = campaignFor(user, ctx.params.id);
+    if (!isReviewer(user, c) && !EDITABLE.includes(c.status)) throw new HttpError(409, 'creatives can only change before approval');
+    const count = (db.prepare(`SELECT COUNT(*) AS n FROM creatives WHERE campaign_id = ?`).get(c.id) as any).n;
+    if (count >= 10) throw new HttpError(400, 'max 10 creatives per campaign');
+    const up = saveGeneratedSvg(config.uploadsDir, renderTemplate(ctx.body));
+    db.prepare(`INSERT INTO creatives VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(newId('cr'), c.id, up.url, up.type, num(ctx.body.durationSec ?? 10, 'durationSec', 5, 30), nowIso());
+    return reload(c.id);
+  });
+
   router.delete('/api/campaigns/:id/creatives/:crId', (ctx) => {
     const user = requireUser(ctx);
     const c = campaignFor(user, ctx.params.id);
@@ -194,7 +214,12 @@ export function registerCampaigns({ db, router, config }: App): void {
     const c = campaignFor(requireUser(ctx), ctx.params.id);
     const n = (db.prepare(`SELECT COUNT(*) AS n FROM creatives WHERE campaign_id = ?`).get(c.id) as any).n;
     if (n === 0) throw new HttpError(400, 'add at least one creative before submitting');
-    return setStatus(c, ['draft', 'rejected'], 'pending_review', { review_note: null });
+    const out = setStatus(c, ['draft', 'rejected'], 'pending_review', { review_note: null });
+    enqueueEmail(db, c.operator_id ? operatorAdminEmails(db, c.operator_id) : platformAdminEmails(db),
+      `Campaign to review: ${c.name}`,
+      `"${c.name}"${out.advertiserName ? ` from ${out.advertiserName}` : ''} is waiting for review.\n\n` +
+      `Payment: ${out.paymentStatus}. Budget: $${(c.budget_cents / 100).toFixed(2)}.\n${config.publicUrl}/console/#/campaigns/${c.id}`);
+    return out;
   });
 
   router.post('/api/campaigns/:id/approve', (ctx) => {
@@ -202,14 +227,25 @@ export function registerCampaigns({ db, router, config }: App): void {
     const c = campaignFor(user, ctx.params.id);
     if (!isReviewer(user, c)) throw new HttpError(403, 'only the operator can approve');
     if (c.payment_status === 'unpaid') throw new HttpError(409, 'payment required: wait for checkout or mark as invoiced');
-    return setStatus(c, ['pending_review'], 'active', { review_note: null });
+    const out = setStatus(c, ['pending_review'], 'active', { review_note: null });
+    if (c.advertiser_id) {
+      enqueueEmail(db, advertiserEmails(db, c.advertiser_id), `Your campaign is live: ${c.name}`,
+        `"${c.name}" was approved and is now playing on screens.\nTrack delivery: ${config.publicUrl}/console/#/campaigns/${c.id}`);
+    }
+    return out;
   });
 
   router.post('/api/campaigns/:id/reject', (ctx) => {
     const user = requireUser(ctx);
     const c = campaignFor(user, ctx.params.id);
     if (!isReviewer(user, c)) throw new HttpError(403, 'only the operator can reject');
-    return setStatus(c, ['pending_review', 'active', 'paused'], 'rejected', { review_note: str(ctx.body.note, 'note', 1, 500) });
+    const note = str(ctx.body.note, 'note', 1, 500);
+    const out = setStatus(c, ['pending_review', 'active', 'paused'], 'rejected', { review_note: note });
+    if (c.advertiser_id) {
+      enqueueEmail(db, advertiserEmails(db, c.advertiser_id), `Changes requested: ${c.name}`,
+        `Your campaign "${c.name}" needs changes before it can run:\n\n${note}\n\nEdit and resubmit: ${config.publicUrl}/console/#/campaigns/${c.id}`);
+    }
+    return out;
   });
 
   router.post('/api/campaigns/:id/pause', (ctx) => setStatus(campaignFor(requireUser(ctx), ctx.params.id), ['active'], 'paused'));
@@ -240,6 +276,7 @@ export function registerCampaigns({ db, router, config }: App): void {
       customerEmail: adv?.contact_email ?? undefined,
       successUrl: `${back}?paid=1`,
       cancelUrl: back,
+      fetchImpl: config.fetchImpl,
     });
     db.prepare(`UPDATE campaigns SET stripe_session_id = ? WHERE id = ?`).run(session.id, c.id);
     return { url: session.url };
@@ -265,10 +302,9 @@ export function registerCampaigns({ db, router, config }: App): void {
   router.get('/api/inventory', (ctx) => {
     const user = requireRole(ctx, 'platform_admin', 'operator_admin', 'advertiser');
     const operatorId = user.role === 'advertiser' ? user.operatorId! : actingOperatorId(ctx, user);
-    const OPEN_HOURS = 12;
     const AD_SEC = 10;
     const rows = db.prepare(`
-      SELECT v.id, v.name, v.lat, v.lng, v.category, v.audience_multiplier, s.loop_sec, s.ad_share_pct
+      SELECT v.id, v.name, v.lat, v.lng, v.category, v.audience_multiplier, v.open_hours, s.loop_sec, s.ad_share_pct
       FROM venues v JOIN screens s ON s.venue_id = v.id WHERE v.operator_id = ?`).all(operatorId) as any[];
     const venues = new Map<string, any>();
     for (const r of rows) {
@@ -276,10 +312,11 @@ export function registerCampaigns({ db, router, config }: App): void {
       // One campaign capped at 20% share of voice (or the screen's ad share if lower)
       const playsPerLoop = Math.floor((r.loop_sec * Math.min(20, r.ad_share_pct)) / 100 / AD_SEC);
       v.screens++;
-      v.estDailyImpressions += Math.round(((OPEN_HOURS * 3600) / r.loop_sec) * playsPerLoop * r.audience_multiplier);
+      const openHours = avgDailyOpenHours(r.open_hours ? JSON.parse(r.open_hours) : null);
+      v.estDailyImpressions += Math.round(((openHours * 3600) / r.loop_sec) * playsPerLoop * r.audience_multiplier);
       venues.set(r.id, v);
     }
-    return { venues: [...venues.values()], assumptions: { openHoursPerDay: OPEN_HOURS, adLengthSec: AD_SEC, maxSovPct: 20 } };
+    return { venues: [...venues.values()], assumptions: { openHoursPerDay: 'venue hours (12h/day when unknown)', adLengthSec: AD_SEC, maxSovPct: 20 } };
   });
 
   // ---- Delivery report ----

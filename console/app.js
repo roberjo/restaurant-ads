@@ -21,9 +21,9 @@ const isAdmin = () => role() === 'platform_admin';
 const label = (s) => String(s).replace(/_/g, ' ');
 
 const STATUS_BADGE = {
-  active: 'ok', online: 'ok', paid: 'ok', completed: 'info', invoiced: 'info',
+  active: 'ok', online: 'ok', paid: 'ok', ok: 'ok', completed: 'info', invoiced: 'info',
   pending_review: 'warn', unpaid: 'warn', paused: 'warn', unpaired: 'warn', draft: '',
-  rejected: 'bad', offline: 'bad',
+  rejected: 'bad', offline: 'bad', failed: 'bad', awaiting_account: 'warn', below_minimum: '', pending: 'warn',
 };
 const badge = (s) => `<span class="badge ${STATUS_BADGE[s] ?? ''}">${esc(label(s))}</span>`;
 
@@ -103,6 +103,111 @@ function setBrand(color) {
   if (color) document.documentElement.style.setProperty('--brand', color);
 }
 
+// ---------- shared components ----------
+const DAY_LABELS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu', 'Thursday'], ['fri', 'Friday'], ['sat', 'Saturday'], ['sun', 'Sunday']];
+
+/** Live-preview ad designer. onSave(body) receives the template fields (plus photoBase64 when chosen). */
+function templateDesigner(el, { onSave, defaults = {}, saveLabel = 'Save ad', withDuration = true }) {
+  el.innerHTML = `
+    <div class="grid cols-2">
+      <form class="tpl">
+        <div class="form-grid">
+          <div class="field"><label>Layout</label><select name="template"><option value="bold">Bold: big headline</option><option value="split">Split: text and photo</option><option value="photo">Photo: full-bleed photo</option></select></div>
+          <div class="field"><label>Business name</label><input name="businessName" maxlength="40" value="${esc(defaults.businessName ?? '')}"></div>
+        </div>
+        <div class="field"><label>Headline (max 60)</label><input name="headline" maxlength="60" required value="${esc(defaults.headline ?? '')}"></div>
+        <div class="field"><label>Supporting line (max 120)</label><input name="subline" maxlength="120"></div>
+        <div class="form-grid">
+          <div class="field"><label>Call to action</label><input name="cta" maxlength="40" placeholder="e.g. Book at brightsmile.com"></div>
+          <div class="field"><label>Photo (split/photo layouts)</label><input name="photo" type="file" accept="image/png,image/jpeg,image/webp"></div>
+          <div class="field"><label>Background</label><input name="bgColor" type="color" value="${esc(defaults.bgColor ?? '#0f766e')}"></div>
+          <div class="field"><label>Accent</label><input name="accentColor" type="color" value="#facc15"></div>
+          ${withDuration ? '<div class="field"><label>Seconds on screen</label><input name="durationSec" type="number" min="5" max="30" value="10"></div>' : ''}
+        </div>
+        <button class="primary" type="submit">${esc(saveLabel)}</button>
+      </form>
+      <div><label>Preview</label><img class="tpl-preview" alt="Ad preview" style="width:100%;aspect-ratio:16/9;border-radius:8px;border:1px solid var(--border);background:var(--surface-2)">
+        <div class="small muted tpl-msg"></div></div>
+    </div>`;
+  const form = $('form.tpl', el);
+  const img = $('.tpl-preview', el);
+  const msg = $('.tpl-msg', el);
+  let photo = null;
+  let timer;
+  const body = () => {
+    const d = formData(form);
+    const b = { template: d.template, headline: d.headline, subline: d.subline, cta: d.cta, businessName: d.businessName, bgColor: d.bgColor, accentColor: d.accentColor };
+    if (photo) b.photoBase64 = photo;
+    if (d.durationSec) b.durationSec = Number(d.durationSec);
+    return b;
+  };
+  async function preview() {
+    if (!form.headline.value.trim()) { msg.textContent = 'Type a headline to see a preview.'; return; }
+    try {
+      const r = await POST('/api/templates/preview', body());
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(r.svg);
+      msg.textContent = '';
+    } catch (e) { msg.textContent = e.message; }
+  }
+  form.oninput = () => { clearTimeout(timer); timer = setTimeout(preview, 300); };
+  form.photo.onchange = async () => { photo = form.photo.files[0] ? await fileToDataUrl(form.photo.files[0]) : null; preview(); };
+  form.onsubmit = act(async () => { await onSave(body()); });
+  preview();
+}
+
+function hoursEditor(el, hours, onSave) {
+  const always = hours === null || hours === undefined;
+  el.innerHTML = `
+    <form class="hours">
+      <div class="checks" style="margin-bottom:10px"><label><input type="checkbox" name="always" ${always ? 'checked' : ''}> Hours unknown / always open</label></div>
+      <table class="hrs" ${always ? 'hidden' : ''}>${DAY_LABELS.map(([k, n]) => {
+        const r = (hours?.[k] ?? [])[0];
+        return `<tr><td>${n}</td><td><label class="small" style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" data-closed="${k}" ${r ? '' : 'checked'}> closed</label></td>
+          <td><input type="time" data-open="${k}" value="${r?.[0] ?? '11:00'}" style="width:auto"></td><td>to</td>
+          <td><input type="time" data-close="${k}" value="${r?.[1] ?? '22:00'}" style="width:auto"></td></tr>`;
+      }).join('')}</table>
+      <p class="small muted">Closing after midnight is fine (e.g. 16:00 to 02:00). Screens turn on 15 minutes before opening and off 15 minutes after closing (Raspberry Pi players), and offline alerts are only sent while you're open.</p>
+      <button class="primary" type="submit">Save hours</button>
+    </form>`;
+  const form = $('form.hours', el);
+  form.always.onchange = () => { $('.hrs', el).hidden = form.always.checked; };
+  form.onsubmit = act(async () => {
+    let out = null;
+    if (!form.always.checked) {
+      out = {};
+      for (const [k] of DAY_LABELS) {
+        if ($(`[data-closed="${k}"]`, el).checked) continue;
+        out[k] = [[$(`[data-open="${k}"]`, el).value, $(`[data-close="${k}"]`, el).value]];
+      }
+    }
+    await onSave(out);
+    toast('Hours saved');
+  });
+}
+
+/** Stripe Connect payout status + onboarding button. */
+async function payoutSetup(el, statusPath, onboardPath, who) {
+  try {
+    const st = await GET(statusPath);
+    el.innerHTML = st.payoutsEnabled
+      ? `<p>${badge('active')} Payouts are enabled. Earnings from card-paid campaigns are transferred to ${esc(who)}'s bank account.</p>`
+      : `<p class="muted">${st.connected ? 'Stripe setup is incomplete.' : `Connect a bank account to receive ${esc(who)}'s earnings automatically.`} Stripe handles identity checks and tax forms.</p>
+         <button class="primary" id="onboard">${st.connected ? 'Finish Stripe setup' : 'Set up payouts'}</button>`;
+    const b = $('#onboard', el);
+    if (b) b.onclick = act(async () => { const r = await POST(onboardPath); location.href = r.url; });
+  } catch (e) {
+    el.innerHTML = `<p class="muted small">${esc(e.message)}</p>`;
+  }
+}
+
+function payoutsTable(rows) {
+  if (!rows.length) return '<div class="empty">No payouts yet.</div>';
+  return `<table><tr><th>Date</th><th>Recipient</th><th>Period end</th><th class="num">Amount</th><th>Status</th></tr>
+    ${rows.map((p) => `<tr><td class="small">${new Date(p.createdAt).toLocaleDateString()}</td><td>${esc(p.recipientName ?? p.recipientId)} <span class="small muted">${esc(p.recipientType)}</span></td>
+      <td>${esc(p.periodEnd)}</td><td class="num">${usd(p.amountCents / 100)}</td>
+      <td>${badge(p.status)}${p.error ? `<div class="small muted">${esc(p.error)}</div>` : ''}</td></tr>`).join('')}</table>`;
+}
+
 // ---------- auth ----------
 function logout() {
   if (S.token) fetch('/api/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${S.token}` } }).catch(() => {});
@@ -171,9 +276,10 @@ function navItems() {
   if (r === 'advertiser') return [['#/campaigns', 'My campaigns'], ['#/campaigns/new', 'New campaign']];
   if (r === 'venue_manager') return [[`#/venues/${S.me.user.venueId}`, 'My venue'], [`#/venues/${S.me.user.venueId}/menu`, 'Menu board'], ['#/screens', 'Screens']];
   const op = [['#/dashboard', 'Dashboard'], ['#/venues', 'Venues'], ['#/screens', 'Screens'], ['#/campaigns', 'Campaigns'],
-    ['#/advertisers', 'Advertisers'], ['#/reports', 'Reports'], ['#/settings', 'Settings']];
+    ['#/advertisers', 'Advertisers'], ['#/reports', 'Reports'], ['#/payouts', 'Payouts'], ['#/audit', 'Audit log'], ['#/settings', 'Settings']];
   if (r === 'operator_admin') return op;
-  const admin = [['#/admin/operators', 'Operators'], ['#/admin/network', 'Network campaigns'], ['#/admin/reports', 'Platform report'], ['#/admin/settings', 'Platform settings']];
+  const admin = [['#/admin/operators', 'Operators'], ['#/admin/network', 'Network campaigns'], ['#/admin/reports', 'Platform report'],
+    ['#/admin/payouts', 'Payouts'], ['#/admin/audit', 'Audit log'], ['#/admin/settings', 'Platform settings']];
   return S.opCtx ? [...admin, ['', `Operator: ${S.opCtx.name}`], ...op] : admin;
 }
 
@@ -315,7 +421,11 @@ async function venueView(id) {
         <div class="row between small"><span>${h.durationSec}s</span><button class="sm danger" data-del="${esc(h.id)}">Remove</button></div></div>`).join('') || '<div class="muted">None yet.</div>'}</div>
       <form id="house" class="row" style="margin-top:12px"><input type="file" name="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" required style="max-width:320px">
         <input type="number" name="durationSec" value="10" min="3" max="120" style="width:90px" title="seconds"> <button type="submit">Upload</button></form>
+      <h3>Or design a promo</h3><div id="houseTpl"></div>
     </div>
+    <div class="card"><h2>Open hours</h2><div id="hours"></div></div>
+    <div class="card"><h2>Square POS</h2><div id="square" class="muted small">Loading…</div></div>
+    <div class="card"><h2>Payouts</h2><div id="payoutSetup" class="small muted">Loading…</div><div id="venuePayouts" class="table-wrap"></div></div>
     <div class="card"><h2>Statement: ${esc(stmt.from)} to ${esc(stmt.to)}</h2>
       ${stmt.byAdvertiser.length ? `<table><tr><th>Advertiser</th><th class="num">Plays</th><th class="num">Impressions</th><th class="num">Your earnings</th></tr>
         ${stmt.byAdvertiser.map((r) => `<tr><td>${esc(r.name)}</td><td class="num">${int(r.plays)}</td><td class="num">${int(r.impressions)}</td><td class="num">${usd(r.venueEarnings)}</td></tr>`).join('')}</table>`
@@ -345,10 +455,36 @@ async function venueView(id) {
     venueView(id);
   });
   for (const b of $$('[data-del]')) b.onclick = act(async () => { await DEL(`/api/venues/${id}/house-creatives/${b.dataset.del}`); venueView(id); });
+  templateDesigner($('#houseTpl'), {
+    defaults: { businessName: v.name, headline: '' }, saveLabel: 'Add promo', withDuration: true,
+    onSave: async (body) => { await POST(`/api/venues/${id}/house-creatives/template`, body); toast('Promo added'); venueView(id); },
+  });
+  hoursEditor($('#hours'), v.openHours, (openHours) => PUT(`/api/venues/${id}`, { openHours }));
+  squareCard($('#square'), id);
+  payoutSetup($('#payoutSetup'), `/api/venues/${id}/stripe/status`, `/api/venues/${id}/stripe/onboard`, v.name);
+  GET('/api/payouts').then((rows) => { $('#venuePayouts').innerHTML = payoutsTable(rows.filter((p) => p.recipientType === 'venue' && p.recipientId === id)); }).catch(() => {});
+}
+
+async function squareCard(el, venueId) {
+  const st = await GET(`/api/venues/${venueId}/square`).catch((e) => ({ error: e.message }));
+  if (st.error) { el.textContent = st.error; return; }
+  if (!st.configured) { el.innerHTML = 'Square menu sync is not enabled on this server.'; return; }
+  el.classList.remove('muted', 'small');
+  el.innerHTML = st.connected
+    ? `<p>${badge('active')} Connected to Square (merchant ${esc(st.merchantId ?? '')}). Prices and sold-out items sync automatically.</p>
+       <p class="small muted">Last sync: ${st.lastSyncAt ? new Date(st.lastSyncAt).toLocaleString() : 'never'}${st.lastError ? ` · <span style="color:var(--bad)">${esc(st.lastError)}</span>` : ''}</p>
+       <div class="row"><button id="sqSync">Sync now</button><button class="danger" id="sqOff">Disconnect</button></div>`
+    : `<p class="muted">Connect Square so menu-board prices and sold-out items update on their own.</p><button class="primary" id="sqOn">Connect Square</button>`;
+  const on = $('#sqOn', el), sync = $('#sqSync', el), off = $('#sqOff', el);
+  if (on) on.onclick = act(async () => { location.href = (await POST(`/api/venues/${venueId}/square/connect`)).url; });
+  if (sync) sync.onclick = act(async () => { const r = await POST(`/api/venues/${venueId}/square/sync`); toast(`Synced ${r.items} items`); squareCard(el, venueId); });
+  if (off) off.onclick = act(async () => { await DEL(`/api/venues/${venueId}/square`); squareCard(el, venueId); });
 }
 
 async function menuView(venueId) {
-  const [v, m] = await Promise.all([GET(`/api/venues/${venueId}`), GET(`/api/venues/${venueId}/menu`)]);
+  const [v, m, sq] = await Promise.all([GET(`/api/venues/${venueId}`), GET(`/api/venues/${venueId}/menu`), GET(`/api/venues/${venueId}/square`).catch(() => ({}))]);
+  const sqResult = (location.hash.match(/square=([a-z_]+)/) || [])[1];
+  if (sqResult) toast(sqResult === 'connected' ? 'Square connected and menu synced' : `Square: ${label(sqResult)}`, sqResult !== 'connected');
   const state = { title: m.title, theme: m.theme, sections: m.sections.length ? m.sections : [{ name: 'Menu', items: [] }] };
 
   function draw() {
@@ -360,6 +496,7 @@ async function menuView(venueId) {
           <div class="field"><label>Theme</label><select id="theme">${['dark', 'light', 'brand'].map((t) => `<option ${t === state.theme ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
         </div>
         <p class="small muted">Tick <b>sold out</b> to strike an item through on screen. Changes reach screens within 5 minutes.</p>
+        ${sq.connected ? '<p class="small"><b>Synced from Square:</b> items are replaced on the next sync, so edit them in Square. Title and theme are kept.</p>' : ''}
       </div>
       ${state.sections.map((s, si) => `
         <div class="card">
@@ -412,7 +549,8 @@ async function screensView() {
         <td>${isOp ? `<select data-mode="${s.id}">${['menu', 'idle', 'signage'].map((m) => `<option ${m === s.mode ? 'selected' : ''}>${m}</option>`).join('')}</select>` : esc(s.mode)}</td>
         <td class="num">${isOp ? `<input type="number" min="0" max="100" value="${s.adSharePct}" data-share="${s.id}" style="width:72px">%` : s.adSharePct + '%'}</td>
         <td>${badge(s.status)}</td><td class="small muted">${s.lastSeenAt ? new Date(s.lastSeenAt).toLocaleString() : '—'}</td>
-        ${isOp ? `<td class="row">${s.deviceId ? `<button class="sm" data-unpair="${s.id}">Unpair</button>` : ''}
+        ${isOp ? `<td class="row">${s.deviceId ? `<button class="sm" data-cmd="identify" data-screen="${s.id}" title="Show this screen's name on the TV">Identify</button>
+          <button class="sm" data-cmd="reload" data-screen="${s.id}">Reload</button><button class="sm" data-unpair="${s.id}">Unpair</button>` : ''}
           <input placeholder="Code" maxlength="8" data-code="${s.id}" style="width:96px;text-transform:uppercase"><button class="sm primary" data-pair="${s.id}">Pair</button></td>` : ''}
       </tr>`).join('')}</table>` : '<div class="empty">No screens yet.</div>'}
     </div>
@@ -442,6 +580,10 @@ async function screensView() {
     screensView();
   });
   for (const b of $$('[data-unpair]')) b.onclick = act(async () => { await POST(`/api/screens/${b.dataset.unpair}/unpair`); screensView(); });
+  for (const b of $$('[data-cmd]')) b.onclick = act(async () => {
+    await POST(`/api/screens/${b.dataset.screen}/commands`, { type: b.dataset.cmd });
+    toast(`${label(b.dataset.cmd)} sent: the screen picks it up within a minute`);
+  });
   for (const s of $$('[data-mode]')) s.onchange = act(async () => {
     const r = await PUT(`/api/screens/${s.dataset.mode}`, { mode: s.value, adSharePct: s.value === 'menu' ? 20 : 40 });
     $(`[data-share="${r.id}"]`).value = r.adSharePct;
@@ -593,7 +735,8 @@ async function campaignView(id) {
       <div class="thumbs">${c.creatives.map((cr) => `<div class="thumb">${cr.type === 'video' ? `<video src="${esc(cr.url)}" muted controls></video>` : `<img src="${esc(cr.url)}" alt="">`}
         <div class="row between small"><span>${cr.durationSec}s</span>${editable ? `<button class="sm danger" data-delcr="${cr.id}">Remove</button>` : ''}</div></div>`).join('') || '<div class="muted">No ads uploaded yet.</div>'}</div>
       ${editable ? `<form id="up" class="row" style="margin-top:12px"><input type="file" name="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" required style="max-width:320px">
-        <input type="number" name="durationSec" value="10" min="5" max="30" style="width:90px" title="seconds"><button type="submit">Upload ad</button></form>` : ''}
+        <input type="number" name="durationSec" value="10" min="5" max="30" style="width:90px" title="seconds"><button type="submit">Upload ad</button></form>
+        <h3>No artwork? Design one</h3><div id="designer"></div>` : ''}
     </div>
     <div class="grid cols-2">
       <div class="card"><h2>Delivery by venue</h2>${rep.byVenue.length ? `<table><tr><th>Venue</th><th class="num">Plays</th><th class="num">Impr.</th><th class="num">Spend</th></tr>
@@ -624,6 +767,11 @@ async function campaignView(id) {
     campaignView(id);
   });
   for (const b of $$('[data-delcr]')) b.onclick = act(async () => { await DEL(`/api/campaigns/${id}/creatives/${b.dataset.delcr}`); campaignView(id); });
+  const designer = $('#designer');
+  if (designer) templateDesigner(designer, {
+    defaults: { businessName: c.advertiserName ?? '' },
+    onSave: async (body) => { await POST(`/api/campaigns/${id}/creatives/template`, body); toast('Ad created'); campaignView(id); },
+  });
 }
 
 // ---------- advertisers ----------
@@ -672,6 +820,7 @@ async function reportsView(from = monthStart(), to = today()) {
       <div class="card stat"><div class="label">Platform fees</div><div class="value">${usd(r.totals.platform)}</div></div>
       <div class="card stat"><div class="label">Your net</div><div class="value">${usd(r.totals.operator)}</div></div>
     </div>
+    ${r.invoicedPlatformFeesOwed ? `<div class="card small">Platform fees owed on campaigns you invoiced directly: <b>${usd(r.invoicedPlatformFeesOwed)}</b></div>` : ''}
     <div class="card table-wrap"><h2>By venue (revenue-share statements)</h2>${moneyTable(r.byVenue, 'name', ['Venue'])}</div>
     <div class="card table-wrap"><h2>By campaign</h2>${moneyTable(r.byCampaign.map((c) => ({ ...c, name: c.name + (c.network ? ' (network)' : '') })), 'name', ['Campaign'])}</div>
     <div class="card table-wrap"><h2>By day</h2>${moneyTable(r.byDay, 'day', ['Day'])}</div>`);
@@ -700,7 +849,9 @@ async function settingsView() {
       <h2>Network demand</h2>
       <div class="checks"><label><input type="checkbox" name="networkOptIn" ${o.networkOptIn ? 'checked' : ''}> Fill unsold time with network and programmatic campaigns</label></div>
       <div style="margin-top:16px"><button class="primary" type="submit">Save settings</button></div>
-    </form>`);
+    </form>
+    <div class="card"><h2>Payouts</h2><div id="payoutSetup" class="small muted">Loading…</div></div>`);
+  payoutSetup($('#payoutSetup'), '/api/operator/stripe/status', '/api/operator/stripe/onboard', o.name);
   $('#f').onsubmit = act(async (e) => {
     const d = formData(e.target);
     const o2 = await PUT('/api/operator', {
@@ -766,11 +917,43 @@ async function adminReportsView() {
     <div class="card table-wrap"><h2>By operator</h2>${moneyTable(r.byOperator, 'name', ['Operator'])}</div>`);
 }
 
+// ---------- payouts and audit ----------
+async function payoutsView(admin = false) {
+  const rows = await GET('/api/payouts');
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  main(`
+    <h1>Payouts</h1>
+    ${admin ? `<div class="card"><h2>Run payouts</h2>
+      <form id="run" class="row"><label style="margin:0">Pay earnings through</label><input type="date" name="periodEnd" value="${yesterday}" max="${yesterday}" style="width:auto">
+        <button class="primary" type="submit">Run payouts</button><button type="button" id="retry">Retry failed / waiting</button></form>
+      <p class="small muted">Transfers each operator's and venue's share of card-paid campaigns via Stripe Connect. Amounts under $1.00 and sub-cent remainders carry forward. Re-running never pays a play twice.</p></div>`
+      : '<div class="card small muted">Payouts cover campaigns paid by card. For campaigns you invoice yourself, you collect the money and pay your venues directly; see Reports for amounts owed.</div>'}
+    <div class="card table-wrap">${payoutsTable(rows)}</div>`);
+  if (admin) {
+    $('#run').onsubmit = act(async (e) => {
+      const r = await POST('/api/admin/payouts/run', formData(e.target));
+      toast(`Created ${r.created} payouts: ${r.paid} paid, ${r.awaiting_account} awaiting bank details, ${r.failed} failed`);
+      payoutsView(true);
+    });
+    $('#retry').onclick = act(async () => { const r = await POST('/api/admin/payouts/retry'); toast(`${r.paid} paid, ${r.failed} failed`); payoutsView(true); });
+  }
+}
+
+async function auditView() {
+  const rows = await GET('/api/audit');
+  main(`
+    <h1>Audit log</h1>
+    <div class="card table-wrap">${rows.length ? `<table><tr><th>When</th><th>Who</th><th>Action</th><th>Result</th></tr>
+      ${rows.map((a) => `<tr><td class="small">${new Date(a.at).toLocaleString()}</td><td>${esc(a.email ?? a.userId)}</td>
+        <td><code class="copy">${esc(a.method)} ${esc(a.path)}</code></td><td>${a.status < 400 ? badge('ok') : `<span class="badge bad">${a.status}</span>`}</td></tr>`).join('')}</table>`
+      : '<div class="empty">No changes recorded yet.</div>'}</div>`);
+}
+
 // ---------- router ----------
 const ROUTES = [
   [/^#\/dashboard$/, () => dashboardView()],
   [/^#\/venues$/, () => venuesView()],
-  [/^#\/venues\/([^/]+)\/menu$/, (id) => menuView(id)],
+  [/^#\/venues\/([^/]+)\/menu/, (id) => menuView(id)],
   [/^#\/venues\/([^/]+)$/, (id) => venueView(id)],
   [/^#\/screens$/, () => screensView()],
   [/^#\/campaigns$/, () => campaignsView()],
@@ -779,6 +962,10 @@ const ROUTES = [
   [/^#\/advertisers$/, () => advertisersView()],
   [/^#\/reports$/, () => reportsView()],
   [/^#\/settings$/, () => settingsView()],
+  [/^#\/payouts$/, () => payoutsView()],
+  [/^#\/audit$/, () => auditView()],
+  [/^#\/admin\/payouts$/, () => payoutsView(true)],
+  [/^#\/admin\/audit$/, () => auditView()],
   [/^#\/admin\/operators$/, () => adminOperatorsView()],
   [/^#\/admin\/network$/, () => campaignsView(true)],
   [/^#\/admin\/network\/new$/, () => campaignNewView(true)],

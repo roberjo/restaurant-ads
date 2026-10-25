@@ -6,6 +6,20 @@ import { HttpError } from './http.ts';
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
+export function sniffImage(buf: Buffer): { ext: string; mime: string } | null {
+  const k = sniff(buf);
+  if (!k || k.type !== 'image') return null;
+  return { ext: k.ext, mime: k.ext === '.png' ? 'image/png' : k.ext === '.webp' ? 'image/webp' : 'image/jpeg' };
+}
+
+/** Store an SVG we generated ourselves (never user-supplied SVG, which could carry script). */
+export function saveGeneratedSvg(uploadsDir: string, svg: string): { url: string; type: 'image' } {
+  mkdirSync(uploadsDir, { recursive: true });
+  const name = randomBytes(12).toString('hex') + '.svg';
+  writeFileSync(join(uploadsDir, name), svg);
+  return { url: `/uploads/${name}`, type: 'image' };
+}
+
 function sniff(buf: Buffer): { ext: string; type: 'image' | 'video' } | null {
   const hex = buf.subarray(0, 4).toString('hex');
   if (hex === '89504e47') return { ext: '.png', type: 'image' };

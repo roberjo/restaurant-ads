@@ -38,6 +38,10 @@ export function registerReports({ db, router }: App): void {
     return {
       from, to,
       totals: money(db.prepare(`SELECT ${MONEY} FROM pop_events p WHERE ${where}`).get(...args)),
+      // Campaigns the operator invoiced directly: the operator collected the money and owes the platform fee.
+      invoicedPlatformFeesOwed: microsToUsd((db.prepare(`
+        SELECT COALESCE(SUM(p.platform_micros), 0) AS owed FROM pop_events p JOIN campaigns c ON c.id = p.campaign_id
+        WHERE ${where} AND c.payment_status = 'invoiced' AND c.operator_id IS NOT NULL`).get(...args) as any).owed),
       byVenue: db.prepare(`
         SELECT v.id, v.name, v.rev_share_pct AS rev_share_pct, ${MONEY}
         FROM pop_events p JOIN venues v ON v.id = p.venue_id WHERE ${where} GROUP BY v.id ORDER BY gross DESC`).all(...args).map(money),

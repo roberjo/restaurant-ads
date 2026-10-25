@@ -9,6 +9,8 @@ import { registerNetwork } from './routes/network.ts';
 import { registerCampaigns } from './routes/campaigns.ts';
 import { registerDevice } from './routes/device.ts';
 import { registerReports } from './routes/reports.ts';
+import { registerPayouts } from './routes/payouts.ts';
+import { registerIntegrations } from './routes/integrations.ts';
 
 export const ROOT = join(import.meta.dirname, '..', '..');
 const MAX_BODY_BYTES = 30 * 1024 * 1024; // base64 creative uploads
@@ -33,7 +35,7 @@ const STATIC_HEADERS: Record<string, Record<string, string>> = {
     'content-security-policy': `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; media-src * blob:; connect-src *; frame-ancestors 'none'; base-uri 'none'`,
   },
   creatives: { ...BASE_HEADERS, 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; sandbox`, 'cache-control': 'public, max-age=3600' },
-  uploads: { ...BASE_HEADERS, 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; sandbox`, 'cache-control': 'public, max-age=31536000, immutable' },
+  uploads: { ...BASE_HEADERS, 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; sandbox`, 'cache-control': 'public, max-age=31536000, immutable' },
 };
 
 const startedAt = new Date().toISOString();
@@ -47,9 +49,24 @@ export function createApp(db: DatabaseSync, config: Config): Server {
   registerCampaigns(app);
   registerDevice(app);
   registerReports(app);
+  registerPayouts(app);
+  registerIntegrations(app);
   const staticDirs = { ...STATIC, uploads: config.uploadsDir };
 
+  const auditInsert = db.prepare(`INSERT INTO audit_log (at, user_id, operator_id, method, path, status, ip) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  /** Record every authenticated change (including refused attempts) for the audit trail. */
+  function audit(ctx: AppCtx | null, status: number) {
+    if (!ctx?.user || ctx.req.method === 'GET') return;
+    const operatorId = ctx.user.operatorId ?? ctx.url.searchParams.get('operatorId') ?? ctx.body?.operatorId ?? null;
+    try {
+      auditInsert.run(new Date().toISOString(), ctx.user.id, operatorId, ctx.req.method ?? '', ctx.url.pathname, status, ctx.req.socket.remoteAddress ?? null);
+    } catch (e) {
+      console.error('audit log write failed', e);
+    }
+  }
+
   return createServer(async (req, res) => {
+    let ctx: AppCtx | null = null;
     const url = new URL(req.url ?? '/', 'http://localhost');
     const isApi = url.pathname.startsWith('/api/');
     // Players may run from packaged apps (Tizen/webOS/Android) on another origin.
@@ -88,13 +105,18 @@ export function createApp(db: DatabaseSync, config: Config): Server {
       if (rawBody) {
         try { body = JSON.parse(rawBody); } catch { throw new HttpError(400, 'invalid JSON body'); }
       }
-      const ctx: AppCtx = { req, res, url, params: m.params, rawBody, body: body ?? {}, user: null };
+      ctx = { req, res, url, params: m.params, rawBody, body: body ?? {}, user: null };
       ctx.user = userFromRequest(db, ctx);
       const result = await m.handler(ctx);
+      audit(ctx, 200);
       if (!res.headersSent) sendJson(res, 200, result ?? { ok: true }, cors);
     } catch (err) {
       if (res.headersSent) return void res.end();
-      if (err instanceof HttpError) return sendJson(res, err.status, { error: err.message }, cors);
+      if (err instanceof HttpError) {
+        audit(ctx, err.status);
+        return sendJson(res, err.status, { error: err.message }, cors);
+      }
+      audit(ctx, 500);
       console.error(err);
       sendJson(res, 500, { error: 'internal error' }, cors);
     }

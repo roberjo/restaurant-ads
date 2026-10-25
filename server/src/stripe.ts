@@ -1,6 +1,57 @@
 // Stripe Checkout (advertiser prepayment) and webhook verification over REST; no SDK needed.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+type Params = Record<string, unknown>;
+
+/** Encode nested params the way Stripe expects: a[b][0][c]=v */
+export function stripeForm(params: Params, prefix = '', out = new URLSearchParams()): URLSearchParams {
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    const key = prefix ? `${prefix}[${k}]` : k;
+    if (typeof v === 'object') stripeForm(v as Params, key, out);
+    else out.append(key, String(v));
+  }
+  return out;
+}
+
+export async function stripeRequest(
+  secretKey: string, method: 'GET' | 'POST', path: string, params: Params = {},
+  opts: { idempotencyKey?: string; fetchImpl?: typeof fetch } = {},
+): Promise<any> {
+  const f = opts.fetchImpl ?? fetch;
+  const body = stripeForm(params);
+  const url = `https://api.stripe.com${path}${method === 'GET' && [...body].length ? `?${body}` : ''}`;
+  const r = await f(url, {
+    method,
+    headers: {
+      authorization: `Bearer ${secretKey}`,
+      'content-type': 'application/x-www-form-urlencoded',
+      ...(opts.idempotencyKey ? { 'idempotency-key': opts.idempotencyKey } : {}),
+    },
+    body: method === 'POST' ? body : undefined,
+  });
+  const json: any = await r.json();
+  if (!r.ok) throw new Error(`stripe: ${json?.error?.message ?? r.status}`);
+  return json;
+}
+
+// ---- Connect (Express accounts) ----
+export const createExpressAccount = (key: string, email: string, metadata: Params, fetchImpl?: typeof fetch) =>
+  stripeRequest(key, 'POST', '/v1/accounts', {
+    type: 'express', country: 'US', email, capabilities: { transfers: { requested: true } }, metadata,
+  }, { fetchImpl });
+
+export const createAccountLink = (key: string, account: string, refreshUrl: string, returnUrl: string, fetchImpl?: typeof fetch) =>
+  stripeRequest(key, 'POST', '/v1/account_links', { account, refresh_url: refreshUrl, return_url: returnUrl, type: 'account_onboarding' }, { fetchImpl });
+
+export const retrieveAccount = (key: string, account: string, fetchImpl?: typeof fetch) =>
+  stripeRequest(key, 'GET', `/v1/accounts/${encodeURIComponent(account)}`, {}, { fetchImpl });
+
+export const createTransfer = (key: string, p: { amountCents: number; destination: string; transferGroup: string; metadata: Params; idempotencyKey: string }, fetchImpl?: typeof fetch) =>
+  stripeRequest(key, 'POST', '/v1/transfers', {
+    amount: p.amountCents, currency: 'usd', destination: p.destination, transfer_group: p.transferGroup, metadata: p.metadata,
+  }, { idempotencyKey: p.idempotencyKey, fetchImpl });
+
 export interface CheckoutParams {
   secretKey: string;
   amountCents: number;
@@ -9,6 +60,7 @@ export interface CheckoutParams {
   customerEmail?: string;
   successUrl: string;
   cancelUrl: string;
+  fetchImpl?: typeof fetch;
 }
 
 export async function createCheckoutSession(p: CheckoutParams): Promise<{ id: string; url: string }> {
@@ -24,7 +76,7 @@ export async function createCheckoutSession(p: CheckoutParams): Promise<{ id: st
     cancel_url: p.cancelUrl,
   });
   if (p.customerEmail) form.set('customer_email', p.customerEmail);
-  const r = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+  const r = await (p.fetchImpl ?? fetch)('https://api.stripe.com/v1/checkout/sessions', {
     method: 'POST',
     headers: { authorization: `Bearer ${p.secretKey}`, 'content-type': 'application/x-www-form-urlencoded' },
     body: form,

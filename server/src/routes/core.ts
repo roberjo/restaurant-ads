@@ -101,6 +101,18 @@ export function registerCore({ db, router, config }: App): void {
     return { networkTakePct: pct };
   });
 
+  // ---- Audit log ----
+  router.get('/api/audit', (ctx) => {
+    const user = requireRole(ctx, 'operator_admin', 'platform_admin');
+    const limit = Math.min(500, Number(ctx.url.searchParams.get('limit') ?? 200) || 200);
+    const all = user.role === 'platform_admin' && !ctx.url.searchParams.get('operatorId');
+    const rows = all
+      ? db.prepare(`SELECT a.*, u.email FROM audit_log a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.id DESC LIMIT ?`).all(limit)
+      : db.prepare(`SELECT a.*, u.email FROM audit_log a LEFT JOIN users u ON u.id = a.user_id WHERE a.operator_id = ? ORDER BY a.id DESC LIMIT ?`)
+        .all(actingOperatorId(ctx, user), limit);
+    return rows.map(toApi);
+  });
+
   // ---- Operator settings (branding, rate card, network opt-in) ----
   router.get('/api/operator', (ctx) => {
     const user = requireRole(ctx, 'operator_admin', 'platform_admin');

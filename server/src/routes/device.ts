@@ -7,6 +7,7 @@ import { HttpError } from '../http.ts';
 import { MICROS_PER_CENT, priceImpressions, splitRevenue } from '../ledger.ts';
 import { buildPlaylist, isEligible, type Campaign, type Creative, type Venue } from '../scheduler.ts';
 import type { App } from '../app-types.ts';
+import { powerState } from '../hours.ts';
 
 const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PAIRING_TTL_MS = 24 * 3600_000;
@@ -89,7 +90,10 @@ export function ingestPop(db: DatabaseSync, device: Device, events: PopEvent[], 
   const networkTake = Number(getSetting(db, 'network_take_pct') ?? 20);
   const servable = new Map(servableCampaignRows(db, sc.operator, ['active', 'paused', 'completed']).map((r) => [r.id, r]));
   const schedCache = new Map<string, Campaign>();
-  const insert = db.prepare(`INSERT OR IGNORE INTO pop_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO pop_events (id, device_id, screen_id, venue_id, operator_id, campaign_id, creative_id,
+      played_at, duration_sec, impressions, gross_micros, platform_micros, operator_micros, venue_micros, received_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const receivedAt = now.toISOString();
   let accepted = 0;
   let rejected = 0;
@@ -202,7 +206,25 @@ export function registerDevice({ db, router }: App): void {
   router.post('/api/device/heartbeat', (ctx) => {
     const d = deviceFromRequest(db, ctx);
     touch(d, ctx.body ?? {});
-    return { ok: true, paired: !!d.screenId };
+    const commands = db.prepare(`SELECT id, type, created_at FROM device_commands WHERE device_id = ? AND acked_at IS NULL ORDER BY created_at`)
+      .all(d.id).map(toApi);
+    return { ok: true, paired: !!d.screenId, commands };
+  });
+
+  router.post('/api/device/commands/:id/ack', (ctx) => {
+    const d = deviceFromRequest(db, ctx);
+    const r = db.prepare(`UPDATE device_commands SET acked_at = ? WHERE id = ? AND device_id = ? AND acked_at IS NULL`)
+      .run(nowIso(), ctx.params.id, d.id);
+    return { ok: r.changes > 0 };
+  });
+
+  // Used by local agents (e.g. the Raspberry Pi HDMI-CEC agent). It deliberately doesn't count as a
+  // heartbeat: only the player reports liveness, so a crashed browser still shows as offline.
+  router.get('/api/device/power', (ctx) => {
+    const d = deviceFromRequest(db, ctx);
+    if (!d.screenId) return { power: 'on', paired: false };
+    const v = db.prepare(`SELECT v.open_hours, v.timezone FROM screens s JOIN venues v ON v.id = s.venue_id WHERE s.id = ?`).get(d.screenId) as any;
+    return { power: powerState(v.open_hours ? JSON.parse(v.open_hours) : null, v.timezone, new Date()), paired: true };
   });
 
   router.post('/api/device/pop', (ctx) => {

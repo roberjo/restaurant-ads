@@ -88,6 +88,23 @@ The full plan for building a **platform that lets independent operators run loca
 **Exit criteria:** a design partner runs ≥10 venues for 30 days with ≥95% screen uptime, ≥3 paying local advertisers, and statements that reconcile with proof-of-play events.
 
 ### Phase 2: Pilot hardening and money movement (1 → 5 operators)
+
+**Status (v0.2.0):**
+
+| Item | Status |
+|---|---|
+| Stripe Connect payouts (operators and venues) | ✅ built |
+| Square POS menu sync (OAuth, webhooks, periodic sync) | ✅ built |
+| Creative templates | ✅ built (SVG; video transcoding still to do) |
+| Notifications (email outbox) | ✅ built (SMS still to do) |
+| Venue open hours, closed-hours alert suppression | ✅ built |
+| Remote device commands (reload, identify, clear cache) | ✅ built (screenshot still to do) |
+| Audit log, schema migrations, background jobs | ✅ built |
+| HDMI-CEC power/input control | ✅ via the **Raspberry Pi kit**. Android/Fire TV apps generally can't send CEC, so the Pi is the CEC path. |
+| Android/Fire TV kiosk app | ⏳ next (needs an Android build toolchain in CI) |
+| Operator SaaS billing (Stripe Billing) | ⏳ next |
+| Postgres + PostGIS, object storage/CDN | ⏳ next (needed before ~50 operators) |
+| Error tracking, SSO | ⏳ next |
 - **Android/Fire TV kiosk app** (Kotlin wrapper around the web player): auto-boot, device-owner/kiosk mode, HDMI-CEC power and input scheduling, watchdog restart, OTA updates. Includes the **pre-imaged device provisioning** flow.
 - **Stripe Connect** (Express accounts) for operators and venues: automatic payouts, 1099-K handled by Stripe, platform application fees.
 - **Operator SaaS billing:** per active screen per month, via Stripe Billing.

@@ -2,6 +2,8 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT, createApp } from './app.ts';
 import { DEMO_PASSWORD, createUser, isEmpty, openDb, seedDemo } from './db.ts';
+import { startJobs } from './jobs.ts';
+import { syncAllSquareVenues } from './square.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const dataDir = process.env.DATA_DIR ?? join(ROOT, 'data');
@@ -24,12 +26,25 @@ if (isEmpty(db)) {
   }
 }
 
-const server = createApp(db, {
-  publicUrl: process.env.PUBLIC_URL ?? `http://localhost:${PORT}`,
+const env = process.env;
+const config = {
+  publicUrl: env.PUBLIC_URL ?? `http://localhost:${PORT}`,
   uploadsDir: join(dataDir, 'uploads'),
-  stripeSecretKey: process.env.STRIPE_SECRET_KEY,
-  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
-});
+  stripeSecretKey: env.STRIPE_SECRET_KEY,
+  stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET,
+  resendApiKey: env.RESEND_API_KEY,
+  emailFrom: env.EMAIL_FROM,
+  appSecret: env.APP_SECRET,
+  squareAppId: env.SQUARE_APP_ID,
+  squareAppSecret: env.SQUARE_APP_SECRET,
+  squareEnvironment: (env.SQUARE_ENVIRONMENT === 'production' ? 'production' : 'sandbox') as 'production' | 'sandbox',
+  squareWebhookSignatureKey: env.SQUARE_WEBHOOK_SIGNATURE_KEY,
+  squareWebhookUrl: env.SQUARE_WEBHOOK_URL,
+};
+if (config.stripeSecretKey && !config.stripeWebhookSecret) console.warn('STRIPE_SECRET_KEY is set without STRIPE_WEBHOOK_SECRET: card payments will never be confirmed.');
+
+const server = createApp(db, config);
+startJobs(db, config, [{ everyMs: 30 * 60_000, run: () => syncAllSquareVenues(db, config) }]);
 
 server.listen(PORT, () => {
   console.log(`Console: http://localhost:${PORT}/console/   Player: http://localhost:${PORT}/player/`);

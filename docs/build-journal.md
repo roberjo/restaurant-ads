@@ -76,7 +76,23 @@ Research also turned up a legal issue: selling a "turnkey business" can make you
 - **Hardening:** per-area Content-Security-Policy (uploads and creatives are sandboxed), frame denial, `nosniff`, `no-store` on the API, Subresource Integrity on CDN assets, a non-root container with a health check.
 - **Releases:** pushing a `vX.Y.Z` tag runs the tests, checks the tag matches `package.json`, publishes a multi-tag image to GHCR with provenance and an SBOM, and creates a GitHub release from the changelog.
 
-## 8. By the numbers (v0.1.0)
+## 8. Phase 2: money movement (v0.2.0)
+
+With CI green and v0.1.0 released, Phase 2 tackled what a design-partner operator needs to run day to day:
+
+- **Payouts that can't double-pay.** Each play links to exactly one operator payout and one venue payout. Transfers are idempotent, and sub-cent remainders carry forward.
+- **Menu boards that maintain themselves.** Square POS sync keeps prices and sold-out items current: the "free menu board" offer has to be zero-effort for the venue.
+- **Ads without a designer.** Local businesses type a headline and get a finished 1920×1080 ad, with a live preview.
+- **Hardware truth over wishful thinking.** Android/Fire TV apps generally can't send HDMI-CEC commands, so TV power and input control ships as a Raspberry Pi kit that follows the venue's open hours.
+- **Fewer false alarms.** Offline alerts only fire while the venue is open, once per outage.
+
+Two bugs were caught by tests written against fake Stripe, Square and Resend APIs:
+1. The email sender bypassed the injectable HTTP client.
+2. The payout status endpoint offered onboarding on servers where Stripe wasn't configured.
+
+The first security scan on the public repo found 4 HIGH CVEs, all in npm tooling bundled with the Node base image. The app runs on `node` alone, so the fix was to remove npm/yarn from the runtime image rather than wait for upstream patches.
+
+## 9. By the numbers (v0.1.0)
 
 | | |
 |---|---|
@@ -86,7 +102,7 @@ Research also turned up a legal issue: selling a "turnkey business" can make you
 | Tests | 20 (unit + end-to-end API) |
 | Planning docs | ~550 lines |
 
-## 9. Lessons
+## 10. Lessons
 
 1. **Ask to be challenged.** The most valuable output of the first hour was being told where the idea was weakest. The pivot came from that.
 2. **Decide the business model before the architecture.** Multi-tenancy, white-labelling and pooled supply only appear in the code because of the operator-platform decision.
@@ -96,4 +112,4 @@ Research also turned up a legal issue: selling a "turnkey business" can make you
 
 ---
 
-*Next: Phase 2, covering payouts, the kiosk player, POS menu sync, creative templates, notifications and production infrastructure. See [roadmap.md](roadmap.md).*
+*Next: the rest of Phase 2 (Android/Fire TV kiosk app, operator SaaS billing, Postgres + object storage, error tracking). See [roadmap.md](roadmap.md).*

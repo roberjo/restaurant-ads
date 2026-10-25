@@ -1,4 +1,4 @@
-# Architecture (Phase 1)
+# Architecture
 
 See [roadmap.md §4](roadmap.md#4-architecture) for the target architecture. This page covers what's built.
 
@@ -61,9 +61,30 @@ draft ──submit──▶ pending_review ──approve*──▶ active ⇄ pa
 * approve requires payment_status = paid (Stripe webhook) or invoiced (operator collects offline)
 ```
 
-## Known Phase 1 limits (addressed in Phase 2)
+## Payouts (Stripe Connect)
+
+```
+card-paid campaign plays ──▶ payout run (platform admin, closed period) ──▶ payouts rows ──▶ Stripe transfers
+   pop_events.operator_payout_id / venue_payout_id link each play to exactly one payout
+```
+- Only campaigns with `payment_status = 'paid'` (money held by the platform's Stripe account) are paid out. For **invoiced** campaigns the operator collected the money; the operator report shows the platform fee owed.
+- Each payout = earned micros + the previous payout's remainder; it transfers whole cents only if ≥ $1.00, otherwise everything carries forward (`below_minimum`).
+- Transfers use the payout ID as the Stripe idempotency key, so retries can't double-pay. Statuses: `pending → paid | failed | awaiting_account`.
+
+## Integrations and background jobs
+- **Square:** OAuth (`ITEMS_READ`, `MERCHANT_PROFILE_READ`), HMAC-signed expiring `state`, tokens encrypted with AES-256-GCM using a key derived from `APP_SECRET`, automatic refresh, catalog → menu sections, signed `catalog.version.updated` webhooks, and a 30-minute resync job.
+- **Jobs** (`jobs.ts`, in-process timers): offline-screen alerts (once per outage, only while the venue is open), outbox delivery (Resend, up to 5 attempts), Square resync. They move to a real queue with Postgres in Phase 2b.
+- **Audit log:** every authenticated non-GET request (including refused ones) is recorded with user, operator, path, status and IP.
+
+## Devices: commands and power
+- `POST /api/screens/:id/commands` queues `identify | reload | clear_cache | refresh_playlist`; the player receives commands in its heartbeat response and acknowledges each one once.
+- `GET /api/device/power` returns `on | standby` from venue hours (±15 min). The Raspberry Pi agent turns that into HDMI-CEC commands. It deliberately isn't a heartbeat.
+
+## Schema migrations
+`openDb` applies ordered migrations tracked by `PRAGMA user_version`, each in a transaction. Inserts name their columns, so adding columns is safe.
+
+## Known limits
 - SQLite and local-disk uploads: move to Postgres/PostGIS plus object storage/CDN.
 - Paused campaigns can still bill plays from players working offline on a cached playlist (bounded by budget).
-- No payouts yet: statements show what's owed. Stripe Connect comes in Phase 2.
-- Kiosk/auto-boot/HDMI-CEC need the native Android wrapper.
-- Reach estimates assume 12 open hours/day; venue open hours come in Phase 2.
+- Android/Fire TV kiosk wrapper not built yet; use the Raspberry Pi kit or a signage browser.
+- Background jobs run in-process; with multiple instances they must move to a queue.

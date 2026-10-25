@@ -8,6 +8,17 @@ export interface Config {
   uploadsDir: string;
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
+  resendApiKey?: string;
+  emailFrom?: string;
+  /** Secret for encrypting stored OAuth tokens and signing OAuth state. Required for POS integrations. */
+  appSecret?: string;
+  squareAppId?: string;
+  squareAppSecret?: string;
+  squareEnvironment?: 'sandbox' | 'production';
+  squareWebhookSignatureKey?: string;
+  squareWebhookUrl?: string;
+  /** Outbound HTTP for third-party APIs (Stripe, Square, email); injectable for tests. */
+  fetchImpl?: typeof fetch;
 }
 
 export interface App {

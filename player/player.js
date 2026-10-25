@@ -14,6 +14,15 @@ const store = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+// A local agent (e.g. the Raspberry Pi installer) can hand over credentials once via #device=<id>.<secret>.
+const handoff = new URLSearchParams(location.hash.slice(1)).get('device');
+if (handoff && handoff.includes('.')) {
+  const [id, secret] = [handoff.slice(0, handoff.indexOf('.')), handoff.slice(handoff.indexOf('.') + 1)];
+  if (store.get('device', null)?.id !== id) { store.del('playlist'); store.del('menu'); }
+  store.set('device', { id, secret });
+  history.replaceState(null, '', location.pathname + location.search);
+}
+
 let device = store.get('device', null);
 let playlist = store.get('playlist', null);
 let menu = store.get('menu', null);
@@ -118,11 +127,38 @@ async function flushPop() {
 async function heartbeat() {
   if (!device) return;
   try {
-    await api('/api/device/heartbeat', {
+    const r = await api('/api/device/heartbeat', {
       method: 'POST',
       body: JSON.stringify({ ua: navigator.userAgent, played, queued: store.get('popQueue', []).length, w: innerWidth, h: innerHeight }),
     });
+    for (const cmd of r.commands ?? []) await runCommand(cmd);
   } catch {}
+}
+
+// Remote commands queued by the operator console. Acknowledge first so a reload doesn't repeat forever.
+async function runCommand(cmd) {
+  try { await api(`/api/device/commands/${encodeURIComponent(cmd.id)}/ack`, { method: 'POST' }); } catch { return; }
+  if (cmd.type === 'reload') location.reload();
+  else if (cmd.type === 'refresh_playlist') lastFetch = 0;
+  else if (cmd.type === 'clear_cache') {
+    try { if ('caches' in window) await caches.delete('creatives'); } catch {}
+    store.del('playlist'); store.del('menu');
+    location.reload();
+  } else if (cmd.type === 'identify') identify();
+}
+
+async function identify() {
+  let label = playlist?.screenId ?? 'This screen';
+  try {
+    const st = await api('/api/device/state');
+    if (st.screen) label = `${st.screen.venueName} · ${st.screen.name}`;
+  } catch {}
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+    'background:rgba(0,0,0,.85);color:#fff;z-index:10;font-size:4vw;font-weight:700;text-align:center';
+  el.innerHTML = `<div>${esc(label)}</div><div style="font-size:1.6vw;font-weight:400;margin-top:1vw;color:#bbb">Identified from the operator console</div>`;
+  document.body.append(el);
+  setTimeout(() => el.remove(), 15_000);
 }
 
 function renderMenu(m) {

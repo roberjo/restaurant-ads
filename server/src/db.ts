@@ -108,7 +108,69 @@ export function openDb(path = ':memory:'): DatabaseSync {
 
     INSERT OR IGNORE INTO settings VALUES ('network_take_pct', '20');
   `);
+  migrate(db);
   return db;
+}
+
+/** Ordered schema migrations; PRAGMA user_version records how many have been applied. */
+const MIGRATIONS: string[] = [
+  // 1: Phase 2 (open hours, payouts, audit log, device commands, notifications, POS integrations)
+  `
+  ALTER TABLE venues ADD COLUMN open_hours TEXT;
+  ALTER TABLE venues ADD COLUMN stripe_account_id TEXT;
+  ALTER TABLE operators ADD COLUMN stripe_account_id TEXT;
+  ALTER TABLE pop_events ADD COLUMN operator_payout_id TEXT;
+  ALTER TABLE pop_events ADD COLUMN venue_payout_id TEXT;
+
+  CREATE TABLE audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id TEXT, operator_id TEXT,
+    method TEXT NOT NULL, path TEXT NOT NULL, status INTEGER NOT NULL, ip TEXT
+  );
+  CREATE INDEX audit_operator_at ON audit_log (operator_id, at);
+
+  CREATE TABLE device_commands (
+    id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id), screen_id TEXT NOT NULL,
+    type TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL, acked_at TEXT
+  );
+  CREATE INDEX device_commands_pending ON device_commands (device_id, acked_at);
+
+  CREATE TABLE outbox (
+    id TEXT PRIMARY KEY, to_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+    dedupe_key TEXT UNIQUE, created_at TEXT NOT NULL, sent_at TEXT
+  );
+
+  CREATE TABLE payouts (
+    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, recipient_type TEXT NOT NULL, recipient_id TEXT NOT NULL,
+    operator_id TEXT NOT NULL, period_end TEXT NOT NULL,
+    earned_micros INTEGER NOT NULL, carry_in_micros INTEGER NOT NULL DEFAULT 0,
+    amount_cents INTEGER NOT NULL, remainder_micros INTEGER NOT NULL,
+    status TEXT NOT NULL, stripe_transfer_id TEXT, error TEXT, created_at TEXT NOT NULL, paid_at TEXT
+  );
+  CREATE INDEX payouts_recipient ON payouts (recipient_type, recipient_id, created_at);
+
+  CREATE TABLE integrations (
+    venue_id TEXT NOT NULL REFERENCES venues(id), provider TEXT NOT NULL,
+    merchant_id TEXT, access_token_enc TEXT NOT NULL, refresh_token_enc TEXT, expires_at TEXT,
+    last_sync_at TEXT, last_error TEXT, created_at TEXT NOT NULL,
+    PRIMARY KEY (venue_id, provider)
+  );
+  `,
+];
+
+function migrate(db: DatabaseSync): void {
+  const current = (db.prepare('PRAGMA user_version').get() as any).user_version as number;
+  for (let i = current; i < MIGRATIONS.length; i++) {
+    db.exec('BEGIN');
+    try {
+      db.exec(MIGRATIONS[i]);
+      db.exec(`PRAGMA user_version = ${i + 1}`);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+  }
 }
 
 export function getSetting(db: DatabaseSync, key: string): string | null {
@@ -119,10 +181,10 @@ export function getSetting(db: DatabaseSync, key: string): string | null {
 export const nowIso = () => new Date().toISOString();
 
 const JSON_COLS = new Set([
-  'blocked_ad_categories', 'house_creatives', 'geo', 'venue_categories', 'dayparts', 'sections', 'last_status',
+  'blocked_ad_categories', 'house_creatives', 'geo', 'venue_categories', 'dayparts', 'sections', 'last_status', 'open_hours',
 ]);
 const BOOL_COLS = new Set(['network_opt_in']);
-const HIDDEN_COLS = new Set(['password_hash', 'secret_hash']);
+const HIDDEN_COLS = new Set(['password_hash', 'secret_hash', 'access_token_enc', 'refresh_token_enc']);
 
 /** snake_case row → camelCase API object, parsing JSON columns. */
 export function toApi<T = any>(row: any): T {
@@ -182,11 +244,19 @@ export function seedDemo(db: DatabaseSync): void {
   db.prepare(`INSERT INTO operators (id, slug, name, brand_color, default_cpm_cents, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
     .run('op_austin', 'austin', 'Austin Screen Co.', '#0f766e', 1200, t);
 
-  const venue = db.prepare(`INSERT INTO venues VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const venue = db.prepare(`
+    INSERT INTO venues (id, operator_id, name, address, lat, lng, timezone, category, blocked_ad_categories,
+      audience_multiplier, rev_share_pct, house_creatives, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   venue.run('ven_tacos', 'op_austin', 'South Congress Tacos', '1500 S Congress Ave', 30.2496, -97.7495, 'America/Chicago',
     'qsr', JSON.stringify(['alcohol', 'cannabis']), 3, 20, JSON.stringify([svg('house-weather', 10)]), t);
   venue.run('ven_pub', 'op_austin', 'Eastside Pub', '1100 E 6th St', 30.2627, -97.7270, 'America/Chicago',
     'bar', JSON.stringify(['cannabis']), 5, 25, JSON.stringify([svg('house-trivia', 15)]), t);
+  // Venues without open_hours are treated as always open; the pub gets real hours as an example.
+  db.prepare(`UPDATE venues SET open_hours = ? WHERE id = 'ven_pub'`).run(JSON.stringify({
+    mon: [['16:00', '02:00']], tue: [['16:00', '02:00']], wed: [['16:00', '02:00']], thu: [['16:00', '02:00']],
+    fri: [['12:00', '02:00']], sat: [['12:00', '02:00']], sun: [['12:00', '22:00']],
+  }));
 
   const screen = db.prepare(`INSERT INTO screens VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
   screen.run('scr_tacos_menu', 'op_austin', 'ven_tacos', 'Menu board (counter)', 'menu', 20, 120, t);

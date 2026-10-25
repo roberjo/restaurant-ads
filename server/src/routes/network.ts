@@ -2,11 +2,14 @@
 import { actingOperatorId, newId, requireRole, type AppCtx, type User } from '../auth.ts';
 import { AD_CATEGORIES, VENUE_CATEGORIES, createUser, nowIso, toApi } from '../db.ts';
 import { HttpError } from '../http.ts';
-import { saveUpload } from '../uploads.ts';
+import { saveGeneratedSvg, saveUpload } from '../uploads.ts';
+import { renderTemplate } from '../templates.ts';
+import { isOpenAt, parseOpenHours } from '../hours.ts';
 import type { App } from '../app-types.ts';
 import { email, int, num, oneOf, optStr, str, stringList } from '../validate.ts';
 
 export const SCREEN_MODES = ['menu', 'idle', 'signage'] as const;
+export const DEVICE_COMMANDS = ['reload', 'identify', 'clear_cache', 'refresh_playlist'] as const;
 export const ONLINE_WINDOW_MS = 5 * 60_000;
 
 export function screenStatus(lastSeenAt: string | null, paired: boolean): 'unpaired' | 'online' | 'offline' {
@@ -66,13 +69,14 @@ export function registerNetwork({ db, router, config }: App): void {
     const id = newId('ven');
     db.prepare(`
       INSERT INTO venues (id, operator_id, name, address, lat, lng, timezone, category, blocked_ad_categories,
-        audience_multiplier, rev_share_pct, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        audience_multiplier, rev_share_pct, open_hours, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       id, operatorId, str(b.name, 'name'), optStr(b.address, 'address', 300) ?? '',
       num(b.lat, 'lat', -90, 90), num(b.lng, 'lng', -180, 180), validTimezone(b.timezone ?? 'America/Chicago'),
       oneOf(b.category ?? 'qsr', 'category', VENUE_CATEGORIES),
       JSON.stringify(b.blockedAdCategories ? stringList(b.blockedAdCategories, 'blockedAdCategories', AD_CATEGORIES) : ['cannabis']),
-      num(b.audienceMultiplier ?? 2, 'audienceMultiplier', 0, 1000), num(b.revSharePct ?? 20, 'revSharePct', 0, 100), nowIso(),
+      num(b.audienceMultiplier ?? 2, 'audienceMultiplier', 0, 1000), num(b.revSharePct ?? 20, 'revSharePct', 0, 100),
+      b.openHours ? JSON.stringify(parseOpenHours(b.openHours)) : null, nowIso(),
     );
     return toApi(db.prepare(`SELECT * FROM venues WHERE id = ?`).get(id));
   });
@@ -84,8 +88,12 @@ export function registerNetwork({ db, router, config }: App): void {
     const blocked = b.blockedAdCategories !== undefined
       ? JSON.stringify(stringList(b.blockedAdCategories, 'blockedAdCategories', AD_CATEGORIES))
       : v.blocked_ad_categories;
+    const openHours = b.openHours !== undefined
+      ? (b.openHours === null ? null : JSON.stringify(parseOpenHours(b.openHours)))
+      : v.open_hours;
+    db.prepare(`UPDATE venues SET open_hours = ? WHERE id = ?`).run(openHours, v.id);
     if (user.role === 'venue_manager') {
-      // Venues control which ad categories appear; commercial terms belong to the operator.
+      // Venues control which ad categories appear and their hours; commercial terms belong to the operator.
       db.prepare(`UPDATE venues SET blocked_ad_categories = ? WHERE id = ?`).run(blocked, v.id);
     } else {
       db.prepare(`
@@ -111,6 +119,16 @@ export function registerNetwork({ db, router, config }: App): void {
     const user = requireRole(ctx, 'operator_admin', 'platform_admin', 'venue_manager');
     const v = venueFor(ctx, user, ctx.params.id);
     const up = saveUpload(config.uploadsDir, ctx.body.dataBase64);
+    const list = JSON.parse(v.house_creatives);
+    list.push({ id: newId('hc'), url: up.url, type: up.type, durationSec: num(ctx.body.durationSec ?? 10, 'durationSec', 3, 120) });
+    db.prepare(`UPDATE venues SET house_creatives = ? WHERE id = ?`).run(JSON.stringify(list), v.id);
+    return toApi(db.prepare(`SELECT * FROM venues WHERE id = ?`).get(v.id));
+  });
+
+  router.post('/api/venues/:id/house-creatives/template', (ctx) => {
+    const user = requireRole(ctx, 'operator_admin', 'platform_admin', 'venue_manager');
+    const v = venueFor(ctx, user, ctx.params.id);
+    const up = saveGeneratedSvg(config.uploadsDir, renderTemplate(ctx.body));
     const list = JSON.parse(v.house_creatives);
     list.push({ id: newId('hc'), url: up.url, type: up.type, durationSec: num(ctx.body.durationSec ?? 10, 'durationSec', 3, 120) });
     db.prepare(`UPDATE venues SET house_creatives = ? WHERE id = ?`).run(JSON.stringify(list), v.id);
@@ -172,9 +190,17 @@ export function registerNetwork({ db, router, config }: App): void {
 
   // ---- Screens ----
   const SCREEN_SELECT = `
-    SELECT s.*, v.name AS venue_name, d.id AS device_id, d.last_seen_at, d.last_status
+    SELECT s.*, v.name AS venue_name, v.open_hours AS venue_open_hours, v.timezone AS venue_timezone,
+      d.id AS device_id, d.last_seen_at, d.last_status
     FROM screens s JOIN venues v ON v.id = s.venue_id LEFT JOIN devices d ON d.screen_id = s.id`;
-  const withStatus = (r: any) => ({ ...toApi(r), status: screenStatus(r.last_seen_at, !!r.device_id) });
+  const withStatus = (r: any) => {
+    const { venueOpenHours, venueTimezone, ...rest } = toApi(r);
+    return {
+      ...rest,
+      status: screenStatus(r.last_seen_at, !!r.device_id),
+      venueOpen: isOpenAt(r.venue_open_hours ? JSON.parse(r.venue_open_hours) : null, r.venue_timezone, new Date()),
+    };
+  };
 
   router.get('/api/screens', (ctx) => {
     const user = requireRole(ctx, 'operator_admin', 'platform_admin', 'venue_manager');
@@ -237,14 +263,27 @@ export function registerNetwork({ db, router, config }: App): void {
     return withStatus(db.prepare(`${SCREEN_SELECT} WHERE s.id = ?`).get(s.id));
   });
 
+  router.post('/api/screens/:id/commands', (ctx) => {
+    const user = requireRole(ctx, 'operator_admin', 'platform_admin');
+    const s = screenFor(ctx, user, ctx.params.id);
+    const type = oneOf(ctx.body.type, 'type', DEVICE_COMMANDS);
+    const d = db.prepare(`SELECT id FROM devices WHERE screen_id = ?`).get(s.id) as any;
+    if (!d) throw new HttpError(409, 'screen has no paired device');
+    const id = newId('cmd');
+    db.prepare(`INSERT INTO device_commands (id, device_id, screen_id, type, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id, d.id, s.id, type, user.id, nowIso());
+    return { id, type, status: 'queued' };
+  });
+
   router.get('/api/fleet', (ctx) => {
     const user = requireRole(ctx, 'operator_admin', 'platform_admin');
     const screens = db.prepare(`${SCREEN_SELECT} WHERE s.operator_id = ? ORDER BY v.name, s.name`)
       .all(actingOperatorId(ctx, user)).map(withStatus);
     const summary = { total: screens.length, online: 0, offline: 0, unpaired: 0 };
     for (const s of screens) summary[s.status as 'online' | 'offline' | 'unpaired']++;
+    // A screen at a closed venue is expected to be off, so only alert while the venue is open.
     const alerts = screens
-      .filter((s) => s.status !== 'online')
+      .filter((s) => s.status === 'unpaired' || (s.status === 'offline' && s.venueOpen))
       .map((s) => ({
         screenId: s.id,
         severity: s.status === 'offline' ? 'high' : 'low',

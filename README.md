@@ -16,7 +16,11 @@ A platform for running **local in-venue TV ad networks**. Independent operators 
 | [docs/build-journal.md](docs/build-journal.md) | How the project was built, decisions and lessons |
 | [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) | Releases and security policy |
 
-## Status: Phase 1 (Operator MVP) built
+## Status: Phase 2 in progress (v0.2.0)
+
+**New in v0.2.0:** Stripe Connect payouts to operators and venues · Square POS menu sync · ad templates with live preview · venue open hours · Raspberry Pi kiosk with HDMI-CEC TV power control ([scripts/pi](scripts/pi)) · remote screen commands · email notifications · audit log. See the [CHANGELOG](CHANGELOG.md).
+
+### Phase 1 (v0.1.0)
 
 - Multi-tenant operators with white-label branding and a self-serve advertiser signup link
 - Roles: platform admin, operator admin, venue manager, advertiser
@@ -64,6 +68,10 @@ Demo logins (password `demo1234`): `admin@platform.test`, `ops@austin.test`, `ta
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | create the first platform admin on an empty database |
 | `SEED_DEMO=1` | seed demo data on an empty database |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | enable advertiser card prepayment (webhook: `POST /api/stripe/webhook`, event `checkout.session.completed`) |
+| `RESEND_API_KEY`, `EMAIL_FROM` | send notification emails (otherwise they're logged and skipped) |
+| `APP_SECRET` | long random string; encrypts stored POS tokens and signs OAuth state (required for Square) |
+| `SQUARE_APP_ID`, `SQUARE_APP_SECRET`, `SQUARE_ENVIRONMENT` | Square menu sync (`sandbox` or `production`); OAuth redirect URL: `{PUBLIC_URL}/api/square/callback` |
+| `SQUARE_WEBHOOK_SIGNATURE_KEY`, `SQUARE_WEBHOOK_URL` | instant resync on catalog changes (`POST /api/square/webhook`, event `catalog.version.updated`) |
 
 ## Development workflow
 
@@ -82,12 +90,18 @@ server/src/
   db.ts             schema, demo seed
   scheduler.ts      playlist builder (pure)
   ledger.ts         CPM pricing and revenue split (pure, integer micro-dollars)
-  stripe.ts         Checkout + webhook signature verification
+  payouts.ts        payout runs and Stripe Connect transfers
+  stripe.ts         Checkout, Connect, webhook signature verification
+  square.ts         Square OAuth, catalog → menu mapping, webhook verification
+  templates.ts      ad templates (SVG)
+  hours.ts          venue open hours and TV power schedule
+  notify.ts         email outbox · jobs.ts background jobs · crypto.ts token encryption
   uploads.ts        content-sniffed creative uploads
-  routes/           core (auth/admin/operator) · network (venues/screens/menus/fleet) ·
-                    campaigns · device (pairing/playlist/proof-of-play) · reports
+  routes/           core (auth/admin/operator/audit) · network (venues/screens/menus/fleet/commands) ·
+                    campaigns · device (pairing/playlist/proof-of-play/power) · reports · payouts · integrations
 console/            role-based web console (no build step)
 player/             web player for TVs, sticks and browsers
+scripts/pi/         Raspberry Pi kiosk + HDMI-CEC installer
 creatives/          demo artwork
 docs/               plan and design
 ```
