@@ -1,8 +1,9 @@
-// Background jobs: offline-screen alerts, email delivery, periodic POS menu sync.
+// Background jobs: offline-screen alerts, email delivery, programmatic notices, periodic POS menu sync.
 import type { DatabaseSync } from 'node:sqlite';
 import type { Config } from './app-types.ts';
 import { isOpenAt } from './hours.ts';
 import { enqueueEmail, flushOutbox, operatorAdminEmails } from './notify.ts';
+import { flushNotices } from './rtb.ts';
 
 export const OFFLINE_ALERT_AFTER_MS = 15 * 60_000;
 
@@ -36,6 +37,7 @@ export function startJobs(db: DatabaseSync, config: Config, extra: Array<{ every
   const timers = [
     setInterval(safe('offline', () => checkOfflineScreens(db, config)), 60_000),
     setInterval(safe('outbox', () => flushOutbox(db, config)), 15_000),
+    setInterval(safe('rtb-notices', () => flushNotices(db, config)), 5_000),
     ...extra.map((j, i) => setInterval(safe(`extra${i}`, j.run), j.everyMs)),
   ];
   for (const t of timers) t.unref();

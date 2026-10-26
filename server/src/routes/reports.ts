@@ -33,7 +33,7 @@ export function registerReports({ db, router }: App): void {
     const user = requireRole(ctx, 'operator_admin', 'platform_admin');
     const operatorId = actingOperatorId(ctx, user);
     const { from, to, toExclusive } = range(ctx);
-    const where = `p.operator_id = ? AND p.played_at >= ? AND p.played_at < ? AND p.campaign_id IS NOT NULL`;
+    const where = `p.operator_id = ? AND p.played_at >= ? AND p.played_at < ? AND (p.campaign_id IS NOT NULL OR p.rtb_win_id IS NOT NULL)`;
     const args = [operatorId, from, toExclusive];
     return {
       from, to,
@@ -48,6 +48,8 @@ export function registerReports({ db, router }: App): void {
       byCampaign: db.prepare(`
         SELECT c.id, c.name, c.tier, c.operator_id IS NULL AS network, ${MONEY}
         FROM pop_events p JOIN campaigns c ON c.id = p.campaign_id WHERE ${where} GROUP BY c.id ORDER BY gross DESC`).all(...args).map(money),
+      // OpenRTB plays have no campaign row: report them as one programmatic line.
+      programmatic: money(db.prepare(`SELECT ${MONEY} FROM pop_events p WHERE ${where} AND p.rtb_win_id IS NOT NULL`).get(...args)),
       byDay: db.prepare(`
         SELECT substr(p.played_at, 1, 10) AS day, ${MONEY}
         FROM pop_events p WHERE ${where} GROUP BY day ORDER BY day`).all(...args).map(money),
@@ -64,7 +66,7 @@ export function registerReports({ db, router }: App): void {
     );
     if (!allowed) throw new HttpError(404, 'venue not found');
     const { from, to, toExclusive } = range(ctx);
-    const where = `p.venue_id = ? AND p.played_at >= ? AND p.played_at < ? AND p.campaign_id IS NOT NULL`;
+    const where = `p.venue_id = ? AND p.played_at >= ? AND p.played_at < ? AND (p.campaign_id IS NOT NULL OR p.rtb_win_id IS NOT NULL)`;
     const args = [v.id, from, toExclusive];
     const strip = (r: any) => ({ plays: r.plays, impressions: r.impressions, venueEarnings: r.venue, ...(r.day ? { day: r.day } : {}), ...(r.name ? { name: r.name } : {}) });
     return {
@@ -74,16 +76,16 @@ export function registerReports({ db, router }: App): void {
       byDay: db.prepare(`SELECT substr(p.played_at, 1, 10) AS day, ${MONEY} FROM pop_events p WHERE ${where} GROUP BY day ORDER BY day`)
         .all(...args).map(money).map(strip),
       byAdvertiser: db.prepare(`
-        SELECT COALESCE(a.name, 'Network advertisers') AS name, ${MONEY}
-        FROM pop_events p JOIN campaigns c ON c.id = p.campaign_id LEFT JOIN advertisers a ON a.id = c.advertiser_id
-        WHERE ${where} GROUP BY a.id ORDER BY venue DESC`).all(...args).map(money).map(strip),
+        SELECT CASE WHEN p.rtb_win_id IS NOT NULL THEN 'Programmatic (national)' ELSE COALESCE(a.name, 'Network advertisers') END AS name, ${MONEY}
+        FROM pop_events p LEFT JOIN campaigns c ON c.id = p.campaign_id LEFT JOIN advertisers a ON a.id = c.advertiser_id
+        WHERE ${where} GROUP BY 1 ORDER BY venue DESC`).all(...args).map(money).map(strip),
     };
   });
 
   router.get('/api/reports/platform', (ctx) => {
     requireRole(ctx, 'platform_admin');
     const { from, to, toExclusive } = range(ctx);
-    const where = `p.played_at >= ? AND p.played_at < ? AND p.campaign_id IS NOT NULL`;
+    const where = `p.played_at >= ? AND p.played_at < ? AND (p.campaign_id IS NOT NULL OR p.rtb_win_id IS NOT NULL)`;
     return {
       from, to,
       totals: money(db.prepare(`SELECT ${MONEY} FROM pop_events p WHERE ${where}`).get(from, toExclusive)),

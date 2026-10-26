@@ -92,7 +92,15 @@ Two bugs were caught by tests written against fake Stripe, Square and Resend API
 
 The first security scan on the public repo found 4 HIGH CVEs, all in npm tooling bundled with the Node base image. The app runs on `node` alone, so the fix was to remove npm/yarn from the runtime image rather than wait for upstream patches.
 
-## 9. By the numbers (v0.1.0)
+## 9. Billing and the pooled network (v0.3.0–v0.4.0)
+
+- **Operator SaaS billing** gave the platform its own revenue line: a per-screen subscription whose quantity follows paired screens. A design rule carried over from payouts: an operator's billing problem must never switch off a venue's screens, so lapsed billing only blocks adding new ones.
+- **Postgres was deliberately deferred.** It would add the first runtime dependency and an async refactor of every route. That's worth it at ~50 operators, not before there are any.
+- **Programmatic readiness before programmatic.** SSPs want reliable screens and good metadata, so a quality score (uptime during open hours, metadata completeness, verified plays) gates access to national demand. A forecast shows what the network can sell.
+- **The OpenRTB gateway** auctions leftover ad time across SSPs and bills each win only after verified proof-of-play. Payouts wait for the SSPs' money: a platform shouldn't pay out money it hasn't received.
+- **Bugs caught by tests:** a swapped argument order when decrypting SSP credentials, auction macros not substituted in VAST impression pixels, and an ambiguous SQL `GROUP BY` in venue statements.
+
+## 10. By the numbers (v0.1.0)
 
 | | |
 |---|---|
@@ -102,7 +110,7 @@ The first security scan on the public repo found 4 HIGH CVEs, all in npm tooling
 | Tests | 20 (unit + end-to-end API) |
 | Planning docs | ~550 lines |
 
-## 10. Lessons
+## 11. Lessons
 
 1. **Ask to be challenged.** The most valuable output of the first hour was being told where the idea was weakest. The pivot came from that.
 2. **Decide the business model before the architecture.** Multi-tenancy, white-labelling and pooled supply only appear in the code because of the operator-platform decision.
@@ -112,4 +120,4 @@ The first security scan on the public repo found 4 HIGH CVEs, all in npm tooling
 
 ---
 
-*Next: the rest of Phase 2 (Android/Fire TV kiosk app, operator SaaS billing, Postgres + object storage, error tracking). See [roadmap.md](roadmap.md).*
+*Next: SSP certification and PMP deals (Phase 3), plus the deferred Phase 2 items (Android/Fire TV kiosk app, Postgres + object storage, error tracking). See [roadmap.md](roadmap.md).*

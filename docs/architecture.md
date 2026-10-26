@@ -88,9 +88,25 @@ pair/unpair screen ──▶ subscription item quantity = paired screens (prorat
 - **Quality score** (`quality.ts`, last 7 days): `0.6 × uptime + 0.2 × metadata + 0.2 × compliance`. Uptime counts only open hours (venue hours) after the device was set up. Metadata checks venue type, hours and address per venue, and diagonal size per screen. Compliance is the share of reported plays that passed verification. Programmatic access requires 24 open screen-hours of history and a score ≥ `programmatic_min_quality` (default 80), unless the platform admin overrides it (`allow` / `deny`).
 - **Forecast** (`forecast.ts`): per open hour, capacity = 3600 s × screen ad share; impressions = ad seconds / 10 s × venue audience multiplier. It's capacity, not net of sold campaigns.
 
+## Programmatic (OpenRTB 2.6 DOOH)
+
+```
+GET /api/device/playlist ──▶ schedule direct/local/network campaigns ──▶ leftover ad seconds ≥ 15 and venue open?
+   └─▶ one bid request (≤ 4 imps of 15 s) to every enabled SSP, in parallel, per-SSP floor and timeout
+        └─▶ best valid bid per imp ──▶ rtb_wins + nurl ──▶ slot `rtb:<win>` (once: true) in the playlist
+POST /api/device/pop ──▶ verify win (screen, expiry, duration, not yet played) ──▶ price × multiplier / 1000
+   └─▶ split with network take ──▶ pop_events.rtb_win_id ──▶ burl + VAST impression pixels queued
+```
+- **Eligibility:** the operator has opted into network demand and passes the quality gate (cached for 10 minutes), at least one SSP is enabled, and the venue is open.
+- **Request:** `dooh` (OpenOOH venue type, publisher = operator), `qty` (venue audience multiplier, publisher-provided), device type 8 (OOH) with location, `bcat` mapped from the venue's blocked categories, first-price auction, USD.
+- **Validation:** response ID must match, price ≥ the SSP's floor, no blocked categories, a playable https creative of 15 s or less.
+- **Notices** (`rtb_notices`) are delivered by a background job every 5 s with retries. URLs resolving to private, loopback or link-local addresses are refused.
+- **Settlement:** SSPs pay the platform 30–60 days after month end. Payout runs include programmatic plays only up to `rtb_settled_through`, which the platform admin sets.
+- SSP credentials are encrypted with `APP_SECRET` and never returned by the API.
+
 ## Integrations and background jobs
 - **Square:** OAuth (`ITEMS_READ`, `MERCHANT_PROFILE_READ`), HMAC-signed expiring `state`, tokens encrypted with AES-256-GCM using a key derived from `APP_SECRET`, automatic refresh, catalog → menu sections, signed `catalog.version.updated` webhooks, and a 30-minute resync job.
-- **Jobs** (`jobs.ts`, in-process timers): offline-screen alerts (once per outage, only while the venue is open), outbox delivery (Resend, up to 5 attempts), Square resync, billing quantity reconciliation (hourly). They move to a real queue with Postgres in Phase 2b.
+- **Jobs** (`jobs.ts`, in-process timers): offline-screen alerts (once per outage, only while the venue is open), outbox delivery (Resend, up to 5 attempts), Square resync, billing quantity reconciliation (hourly), programmatic notices (every 5 s). They move to a real queue with Postgres in Phase 2b.
 - **Audit log:** every authenticated non-GET request (including refused ones) is recorded with user, operator, path, status and IP.
 
 ## Devices: commands and power

@@ -171,7 +171,7 @@ export async function runAuction(db: DatabaseSync, config: Config, s: RtbScreen,
   const responses = await Promise.all(ssps.map(async (ssp) => {
     try {
       const headers: Record<string, string> = { 'content-type': 'application/json', 'x-openrtb-version': '2.6' };
-      if (ssp.auth_header_enc && config.appSecret) headers.authorization = decrypt(ssp.auth_header_enc, config.appSecret);
+      if (ssp.auth_header_enc && config.appSecret) headers.authorization = decrypt(config.appSecret, ssp.auth_header_enc);
       const body = { ...request, tmax: ssp.timeout_ms, imp: request.imp.map((i) => ({ ...i, bidfloor: ssp.floor_cpm_cents / 100 })) };
       const r = await f(ssp.endpoint_url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ssp.timeout_ms) });
       if (r.status === 204) return { ssp, body: null, error: null };
@@ -201,7 +201,7 @@ export async function runAuction(db: DatabaseSync, config: Config, s: RtbScreen,
     insertWin.run(id, w.ssp.id, request.id, impId, String(w.bid.id ?? ''), w.seat, s.screen.id, s.operator.id, s.venueRow.id,
       Math.round(price * 1_000_000), s.venueRow.audience_multiplier, w.creative.url, w.creative.type, w.creative.durationSec,
       JSON.stringify(w.bid.adomain ?? []), String(w.bid.crid ?? ''), w.bid.burl ? sub(w.bid.burl) : null,
-      JSON.stringify(w.creative.impressions), now.toISOString(), new Date(now.getTime() + exp * 1000).toISOString());
+      JSON.stringify(w.creative.impressions.map(sub)), now.toISOString(), new Date(now.getTime() + exp * 1000).toISOString());
     if (w.bid.nurl) queueNotice(db, id, 'nurl', sub(w.bid.nurl));
     out.push({ id: `rtb:${id}`, url: w.creative.url, type: w.creative.type, durationSec: w.creative.durationSec });
   }

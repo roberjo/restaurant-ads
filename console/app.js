@@ -317,7 +317,7 @@ function navItems() {
     ['#/advertisers', 'Advertisers'], ['#/reports', 'Reports'], ['#/payouts', 'Payouts'], ['#/audit', 'Audit log'], ['#/settings', 'Settings']];
   if (r === 'operator_admin') return op;
   const admin = [['#/admin/operators', 'Operators'], ['#/admin/network', 'Network campaigns'], ['#/admin/reports', 'Platform report'],
-    ['#/admin/network-quality', 'Pooled network'], ['#/admin/billing', 'Billing'], ['#/admin/payouts', 'Payouts'], ['#/admin/audit', 'Audit log'], ['#/admin/settings', 'Platform settings']];
+    ['#/admin/network-quality', 'Pooled network'], ['#/admin/programmatic', 'Programmatic'], ['#/admin/billing', 'Billing'], ['#/admin/payouts', 'Payouts'], ['#/admin/audit', 'Audit log'], ['#/admin/settings', 'Platform settings']];
   return S.opCtx ? [...admin, ['', `Operator: ${S.opCtx.name}`], ...op] : admin;
 }
 
@@ -902,7 +902,11 @@ async function reportsView(from = monthStart(), to = today()) {
     </div>
     ${r.invoicedPlatformFeesOwed ? `<div class="card small">Platform fees owed on campaigns you invoiced directly: <b>${usd(r.invoicedPlatformFeesOwed)}</b></div>` : ''}
     <div class="card table-wrap"><h2>By venue (revenue-share statements)</h2>${moneyTable(r.byVenue, 'name', ['Venue'])}</div>
-    <div class="card table-wrap"><h2>By campaign</h2>${moneyTable(r.byCampaign.map((c) => ({ ...c, name: c.name + (c.network ? ' (network)' : '') })), 'name', ['Campaign'])}</div>
+    <div class="card table-wrap"><h2>By campaign</h2>${moneyTable([
+      ...r.byCampaign.map((c) => ({ ...c, name: c.name + (c.network ? ' (network)' : '') })),
+      ...(r.programmatic?.plays ? [{ ...r.programmatic, name: 'Programmatic (national buyers via SSPs)' }] : []),
+    ], 'name', ['Campaign'])}
+      ${r.programmatic?.plays ? '<p class="small muted">Programmatic earnings are paid out once the SSPs have paid the platform, typically 30–60 days after the month ends.</p>' : ''}</div>
     <div class="card table-wrap"><h2>By day</h2>${moneyTable(r.byDay, 'day', ['Day'])}</div>`);
   $('#range').onsubmit = act(async (e) => { const d = formData(e.target); await reportsView(d.from, d.to); });
 }
@@ -1043,6 +1047,48 @@ async function adminNetworkQualityView() {
   });
 }
 
+async function adminProgrammaticView() {
+  const [ssps, st] = await Promise.all([GET('/api/admin/ssps'), GET('/api/admin/rtb?days=7')]);
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  main(`
+    <h1>Programmatic (OpenRTB)</h1>
+    <div class="grid cols-4">
+      <div class="card stat"><div class="label">Auctions (7 days)</div><div class="value">${int(st.auctions)}</div></div>
+      <div class="card stat"><div class="label">Fill rate</div><div class="value">${st.fillRatePct}%</div></div>
+      <div class="card stat"><div class="label">Wins / bids</div><div class="value">${int(st.wins)} / ${int(st.bids)}</div></div>
+      <div class="card stat"><div class="label">SSP errors</div><div class="value">${int(st.errors)}</div></div>
+    </div>
+    <div class="card table-wrap"><h2>SSPs</h2>
+      ${ssps.length ? `<table><tr><th>Name</th><th>Endpoint</th><th class="num">Floor CPM</th><th class="num">Timeout</th><th>Auth</th><th class="num">Wins</th><th class="num">Played</th><th class="num">Gross (7d)</th><th></th></tr>
+      ${ssps.map((s) => { const x = st.bySsp.find((b) => b.id === s.id) ?? {}; return `<tr><td>${esc(s.name)}</td><td class="small"><code class="copy">${esc(s.endpointUrl)}</code></td>
+        <td class="num">${usd(s.floorCpmCents / 100)}</td><td class="num">${s.timeoutMs} ms</td><td>${s.hasAuth ? badge('ok') : '—'}</td>
+        <td class="num">${int(x.wins)}</td><td class="num">${int(x.played)}</td><td class="num">${usd(x.grossUsd)}</td>
+        <td><button class="sm" data-toggle="${esc(s.id)}" data-on="${s.enabled ? 0 : 1}">${s.enabled ? 'Disable' : 'Enable'}</button></td></tr>`; }).join('')}</table>`
+        : '<div class="empty">No SSPs connected. Programmatic fill starts when one is added.</div>'}</div>
+    <div class="card"><h2>Connect an SSP</h2>
+      <form id="f" class="form-grid">
+        <div class="field"><label>Name</label><input name="name" required placeholder="e.g. Vistar Media"></div>
+        <div class="field"><label>OpenRTB 2.6 endpoint (https)</label><input name="endpointUrl" type="url" pattern="https://.*" required></div>
+        <div class="field"><label>Authorization header value (stored encrypted)</label><input name="authHeader" type="password" autocomplete="off" placeholder="optional"></div>
+        <div class="field"><label>Floor CPM (USD)</label><input name="floor" type="number" min="0" step="0.01" value="3.00"></div>
+        <div class="field"><label>Timeout (ms)</label><input name="timeoutMs" type="number" min="50" max="2000" value="300"></div>
+        <div class="field" style="align-self:end"><button class="primary" type="submit">Add SSP</button></div>
+      </form></div>
+    <div class="card"><h2>Settlement</h2>
+      <p class="small muted">SSPs pay the platform after the month closes. Programmatic plays are included in payout runs only up to the date you've been paid through.</p>
+      <form id="settled" class="row"><label style="margin:0">SSPs have paid through</label><input type="date" name="settledThrough" value="${esc(st.settledThrough ?? '')}" max="${yesterday}" style="width:auto">
+        <button type="submit">Save</button></form>
+      <p class="small muted">Notices (7 days): ${Object.entries(st.notices).map(([k, n]) => `${esc(k)} ${int(n)}`).join(' · ') || 'none'}</p></div>`);
+  $('#f').onsubmit = act(async (e) => {
+    const d = formData(e.target);
+    await POST('/api/admin/ssps', { name: d.name, endpointUrl: d.endpointUrl, authHeader: d.authHeader || null, floorCpmCents: Math.round(Number(d.floor) * 100), timeoutMs: Number(d.timeoutMs) });
+    toast('SSP added');
+    adminProgrammaticView();
+  });
+  for (const b of $$('[data-toggle]')) b.onclick = act(async () => { await PUT(`/api/admin/ssps/${b.dataset.toggle}`, { enabled: b.dataset.on === '1' }); adminProgrammaticView(); });
+  $('#settled').onsubmit = act(async (e) => { await PUT('/api/admin/rtb/settled', { settledThrough: formData(e.target).settledThrough || null }); toast('Saved'); });
+}
+
 async function adminBillingView() {
   const r = await GET('/api/admin/billing');
   main(`
@@ -1113,6 +1159,7 @@ const ROUTES = [
   [/^#\/settings/, () => settingsView()],
   [/^#\/admin\/billing$/, () => adminBillingView()],
   [/^#\/admin\/network-quality$/, () => adminNetworkQualityView()],
+  [/^#\/admin\/programmatic$/, () => adminProgrammaticView()],
   [/^#\/payouts$/, () => payoutsView()],
   [/^#\/audit$/, () => auditView()],
   [/^#\/admin\/payouts$/, () => payoutsView(true)],

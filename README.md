@@ -16,9 +16,11 @@ A platform for running **local in-venue TV ad networks**. Independent operators 
 | [docs/build-journal.md](docs/build-journal.md) | How the project was built, decisions and lessons |
 | [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) | Releases and security policy |
 
-## Status: v0.3.0, Phase 2 money movement complete; Phase 3 (pooled programmatic network) next
+## Status: v0.4.0, Phase 3 (pooled programmatic network) in progress
 
-**New in v0.3.0:** operator SaaS billing on Stripe Billing: per-screen subscriptions, trials, a free tier and design-partner comps.
+**New in v0.4.0:** OpenRTB 2.6 DOOH gateway (programmatic fill from connected SSPs), operator quality scores that gate programmatic demand, inventory forecasts, OpenOOH venue metadata.
+
+**v0.3.0:** operator SaaS billing on Stripe Billing: per-screen subscriptions, trials, a free tier and design-partner comps.
 
 **v0.2.0:** Stripe Connect payouts to operators and venues · Square POS menu sync · ad templates with live preview · venue open hours · Raspberry Pi kiosk with HDMI-CEC TV power control ([scripts/pi](scripts/pi)) · remote screen commands · email notifications · audit log. See the [CHANGELOG](CHANGELOG.md).
 
@@ -71,7 +73,7 @@ Demo logins (password `demo1234`): `admin@platform.test`, `ops@austin.test`, `ta
 | `SEED_DEMO=1` | seed demo data on an empty database |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | enable advertiser card prepayment, payouts and operator SaaS billing. Webhook: `POST /api/stripe/webhook` with events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `customer.subscription.trial_will_end`, `invoice.payment_failed`. Enable the Stripe customer portal for operators to manage cards and invoices. |
 | `RESEND_API_KEY`, `EMAIL_FROM` | send notification emails (otherwise they're logged and skipped) |
-| `APP_SECRET` | long random string; encrypts stored POS tokens and signs OAuth state (required for Square) |
+| `APP_SECRET` | long random string; encrypts stored POS tokens and SSP credentials, and signs OAuth state (required for Square and authenticated SSPs) |
 | `SQUARE_APP_ID`, `SQUARE_APP_SECRET`, `SQUARE_ENVIRONMENT` | Square menu sync (`sandbox` or `production`); OAuth redirect URL: `{PUBLIC_URL}/api/square/callback` |
 | `SQUARE_WEBHOOK_SIGNATURE_KEY`, `SQUARE_WEBHOOK_URL` | instant resync on catalog changes (`POST /api/square/webhook`, event `catalog.version.updated`) |
 
@@ -94,6 +96,8 @@ server/src/
   ledger.ts         CPM pricing and revenue split (pure, integer micro-dollars)
   payouts.ts        payout runs and Stripe Connect transfers
   billing.ts        operator SaaS subscriptions (per paired screen, Stripe Billing)
+  rtb.ts            OpenRTB 2.6 DOOH gateway: bid requests, winner selection, notices
+  quality.ts        operator quality score · forecast.ts inventory forecast
   stripe.ts         Checkout, Connect, webhook signature verification
   square.ts         Square OAuth, catalog → menu mapping, webhook verification
   templates.ts      ad templates (SVG)

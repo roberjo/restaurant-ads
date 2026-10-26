@@ -4,7 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-26
+
+Phase 3 (part 1): the pooled programmatic network.
+
 ### Added
+- **OpenRTB 2.6 DOOH gateway:** unsold ad time (after direct, local and network campaigns) is auctioned across connected SSPs when a screen fetches its playlist, while the venue is open.
+  - Bid requests include the `dooh` object (OpenOOH venue type), `qty.multiplier`, an out-of-home device with location, `bcat` built from the venue's blocked categories, and per-SSP floors and timeouts.
+  - The best valid bid per impression wins. Creatives are VAST (MP4 or static image), an image tag or an image URL, over https only.
+  - Win notices (`nurl`) fire on selection. Billing notices (`burl`) and VAST impression pixels fire after proof-of-play, with OpenRTB macros substituted. Notice URLs that resolve to private or local addresses are refused.
+  - Each win plays once, and proof-of-play verifies it: right screen, within its expiry, long enough, never billed twice. It's then split like any other play using the network take rate.
+  - Programmatic plays appear in operator and venue reports. They're included in payouts only up to the "SSPs have paid through" date set by the platform admin.
+  - Admin Programmatic page: connect, enable and disable SSPs (credentials encrypted with `APP_SECRET`), auction count, fill rate, wins and revenue by SSP, notice delivery, settlement date.
 - **Venue and screen metadata for programmatic buyers:** OpenOOH venue type per venue (defaults from the venue category), and screen resolution, diagonal size and audio.
 - **Operator quality score** (last 7 days): uptime during open hours from hourly player activity (60%), venue/screen details complete (20%), plays passing proof-of-play verification (20%). Operators need 24 open screen-hours of history and a score of at least 80 (a platform setting) to receive programmatic demand. The platform admin can always allow or pause an operator.
 - **Inventory forecast:** ad capacity and impressions for the next 1–30 days by venue type, daypart, venue and day, for each operator and for the pooled network of eligible operators.
@@ -68,7 +79,8 @@ Phase 1: Operator MVP. See [docs/roadmap.md](docs/roadmap.md).
 ### Security
 - Content-Security-Policy per area (strict for the console, sandboxed for uploads and creatives), `X-Frame-Options: DENY`, `nosniff`, `no-store` on the API, Subresource Integrity on CDN assets.
 
-[Unreleased]: https://github.com/roberjo/restaurant-ads/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/roberjo/restaurant-ads/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/roberjo/restaurant-ads/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/roberjo/restaurant-ads/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/roberjo/restaurant-ads/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/roberjo/restaurant-ads/compare/v0.1.0...v0.2.0
