@@ -7,7 +7,9 @@ import { HttpError } from '../http.ts';
 import { MICROS_PER_CENT, priceImpressions, splitRevenue } from '../ledger.ts';
 import { buildPlaylist, isEligible, type Campaign, type Creative, type Venue } from '../scheduler.ts';
 import type { App } from '../app-types.ts';
-import { powerState } from '../hours.ts';
+import { isOpenAt, powerState } from '../hours.ts';
+import { RTB_SLOT_SEC, queueNotice, runAuction } from '../rtb.ts';
+import type { Config } from '../app-types.ts';
 import { recordActivity } from '../quality.ts';
 
 const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -64,12 +66,35 @@ function servableCampaignRows(db: DatabaseSync, operator: any, statuses: string[
     .all(...statuses, operator.id, operator.network_opt_in) as any[];
 }
 
+const activeCampaigns = (db: DatabaseSync, sc: ScreenCtx) => servableCampaignRows(db, sc.operator, ['active'])
+  .filter((r) => r.spent_micros < r.budget_cents * MICROS_PER_CENT)
+  .map((r) => campaignForScheduler(db, r));
+
 export function buildScreenPlaylist(db: DatabaseSync, device: Device, now = new Date()) {
   const sc = loadScreenCtx(db, device);
-  const campaigns = servableCampaignRows(db, sc.operator, ['active'])
-    .filter((r) => r.spent_micros < r.budget_cents * MICROS_PER_CENT)
-    .map((r) => campaignForScheduler(db, r));
-  const slots = buildPlaylist(sc.venue, campaigns, now, { loopSec: sc.screen.loop_sec, adSharePct: sc.screen.ad_share_pct });
+  const slots = buildPlaylist(sc.venue, activeCampaigns(db, sc), now, { loopSec: sc.screen.loop_sec, adSharePct: sc.screen.ad_share_pct });
+  return { screenId: sc.screen.id, mode: sc.screen.mode, generatedAt: now.toISOString(), ttlSec: PLAYLIST_TTL_SEC, slots };
+}
+
+/** Playlist plus programmatic fill: ad time left after direct, local and network campaigns is auctioned over OpenRTB. */
+export async function buildScreenPlaylistWithRtb(db: DatabaseSync, config: Config, device: Device, now = new Date()) {
+  const sc = loadScreenCtx(db, device);
+  const campaigns = activeCampaigns(db, sc);
+  const opts = { loopSec: sc.screen.loop_sec, adSharePct: sc.screen.ad_share_pct };
+  let slots = buildPlaylist(sc.venue, campaigns, now, opts);
+  const free = (opts.loopSec * opts.adSharePct) / 100 - slots.filter((s) => s.campaignId).reduce((n, s) => n + s.durationSec, 0);
+  const open = isOpenAt(sc.venueRow.open_hours ? JSON.parse(sc.venueRow.open_hours) : null, sc.venueRow.timezone, now);
+  if (free >= RTB_SLOT_SEC && open) {
+    const wins = await runAuction(db, config, { screen: sc.screen, venueRow: sc.venueRow, operator: sc.operator }, free, now);
+    if (wins.length) {
+      const rtb: Campaign[] = wins.map((cr) => ({
+        id: cr.id, advertiser: '', tier: 'rtb', startDate: '0000-01-01', endDate: '9999-12-31', geo: null, venueCategories: null,
+        dayparts: null, adCategory: '__rtb', weight: 1, maxSovPct: (cr.durationSec * 100) / opts.loopSec + 0.001, creatives: [cr],
+      }));
+      slots = buildPlaylist(sc.venue, [...campaigns, ...rtb], now, opts)
+        .map((s) => (s.campaignId?.startsWith('rtb:') ? { ...s, once: true } : s));
+    }
+  }
   return { screenId: sc.screen.id, mode: sc.screen.mode, generatedAt: now.toISOString(), ttlSec: PLAYLIST_TTL_SEC, slots };
 }
 
@@ -93,8 +118,8 @@ export function ingestPop(db: DatabaseSync, device: Device, events: PopEvent[], 
   const schedCache = new Map<string, Campaign>();
   const insert = db.prepare(`
     INSERT OR IGNORE INTO pop_events (id, device_id, screen_id, venue_id, operator_id, campaign_id, creative_id,
-      played_at, duration_sec, impressions, gross_micros, platform_micros, operator_micros, venue_micros, received_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      played_at, duration_sec, impressions, gross_micros, platform_micros, operator_micros, venue_micros, received_at, rtb_win_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const receivedAt = now.toISOString();
   let accepted = 0;
   let rejected = 0;
@@ -112,8 +137,20 @@ export function ingestPop(db: DatabaseSync, device: Device, events: PopEvent[], 
       const playedAt = new Date(playedMs).toISOString();
       const id = `${device.id}:${e.id}`;
       let money = { impressions: 0, grossMicros: 0, platformMicros: 0, operatorMicros: 0, venueMicros: 0 };
+      let win: any = null;
 
-      if (e.campaignId) {
+      if (typeof e.campaignId === 'string' && e.campaignId.startsWith('rtb:')) {
+        // Programmatic win: must be this screen's, played within its validity window, once, and long enough.
+        win = db.prepare(`SELECT * FROM rtb_wins WHERE id = ? AND screen_id = ?`).get(e.campaignId.slice(4), sc.screen.id);
+        if (!win || e.creativeId !== e.campaignId || playedMs > Date.parse(win.expires_at) || playedMs < Date.parse(win.created_at) - 60_000 ||
+            Number(e.durationSec) < win.duration_sec * MIN_PLAY_FRACTION) {
+          rejected++;
+          continue;
+        }
+        if (win.played_at) { duplicates++; continue; }
+        const gross = Math.round((win.price_cpm_micros * win.multiplier) / 1000);
+        money = { impressions: win.multiplier, ...splitRevenue(gross, networkTake, sc.venueRow.rev_share_pct) };
+      } else if (e.campaignId) {
         const row = servable.get(e.campaignId);
         let camp = row && schedCache.get(row.id);
         if (row && !camp) { camp = campaignForScheduler(db, row); schedCache.set(row.id, camp); }
@@ -133,12 +170,18 @@ export function ingestPop(db: DatabaseSync, device: Device, events: PopEvent[], 
       }
 
       const r = insert.run(
-        id, device.id, sc.screen.id, sc.venueRow.id, sc.operator.id, e.campaignId ?? null, e.creativeId,
+        id, device.id, sc.screen.id, sc.venueRow.id, sc.operator.id, win ? null : e.campaignId ?? null, e.creativeId,
         playedAt, Number(e.durationSec), money.impressions, money.grossMicros, money.platformMicros,
-        money.operatorMicros, money.venueMicros, receivedAt,
+        money.operatorMicros, money.venueMicros, receivedAt, win?.id ?? null,
       );
       if (!r.changes) { duplicates++; continue; }
       accepted++;
+      if (win) {
+        db.prepare(`UPDATE rtb_wins SET played_at = ? WHERE id = ?`).run(playedAt, win.id);
+        if (win.burl) queueNotice(db, win.id, 'burl', win.burl);
+        for (const u of JSON.parse(win.impression_urls ?? '[]')) queueNotice(db, win.id, 'impression', u);
+        continue;
+      }
       if (e.campaignId && money.grossMicros > 0) {
         db.prepare(`UPDATE campaigns SET spent_micros = spent_micros + ? WHERE id = ?`).run(money.grossMicros, e.campaignId);
         db.prepare(`UPDATE campaigns SET status = 'completed' WHERE id = ? AND status = 'active' AND spent_micros >= budget_cents * ?`)
@@ -154,7 +197,7 @@ export function ingestPop(db: DatabaseSync, device: Device, events: PopEvent[], 
   return { accepted, rejected, duplicates };
 }
 
-export function registerDevice({ db, router }: App): void {
+export function registerDevice({ db, router, config }: App): void {
   const registerLimit = rateLimiter(20, 3600_000);
   const touch = (d: Device, status?: unknown) =>
     db.prepare(`UPDATE devices SET last_seen_at = ?${status !== undefined ? ', last_status = ?' : ''} WHERE id = ?`)
@@ -193,7 +236,7 @@ export function registerDevice({ db, router }: App): void {
   router.get('/api/device/playlist', (ctx) => {
     const d = deviceFromRequest(db, ctx);
     touch(d);
-    return buildScreenPlaylist(db, d);
+    return buildScreenPlaylistWithRtb(db, config, d);
   });
 
   router.get('/api/device/menu', (ctx) => {

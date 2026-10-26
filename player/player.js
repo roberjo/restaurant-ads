@@ -93,14 +93,19 @@ async function refreshPlaylist() {
 
 // Warm the Cache API / HTTP cache so playback survives network drops.
 async function prefetch(slots) {
-  const urls = [...new Set(slots.filter((s) => s.type !== 'menu').map((s) => API + s.url))];
+  const urls = [...new Set(slots.filter((s) => s.type !== 'menu').map((s) => mediaUrl(s.url)))];
   if ('caches' in window) {
     try { await (await caches.open('creatives')).addAll(urls); return; } catch {}
   }
   urls.forEach((u) => fetch(u).catch(() => {}));
 }
 
+// SSP creatives are absolute URLs; our own are relative to the API.
+const mediaUrl = (u) => (/^https?:\/\//.test(u) ? u : API + u);
+const playedOnce = new Set();
+
 function logPlay(slot, startedAt) {
+  if (slot.once) playedOnce.add(slot.creativeId);
   const q = store.get('popQueue', []);
   q.push({
     id: `${startedAt}-${slot.creativeId}`,
@@ -185,14 +190,14 @@ function show(slot) {
       timer = setTimeout(() => done(true), slot.durationSec * 1000);
     } else if (slot.type === 'video') {
       const el = document.createElement('video');
-      Object.assign(el, { src: API + slot.url, muted: true, autoplay: true, playsInline: true });
+      Object.assign(el, { src: mediaUrl(slot.url), muted: true, autoplay: true, playsInline: true });
       el.onended = () => done(true);
       el.onerror = () => done(false);
       timer = setTimeout(() => done(true), (slot.durationSec + 2) * 1000);
       stage.replaceChildren(el);
     } else {
       const el = new Image();
-      el.src = API + slot.url;
+      el.src = mediaUrl(slot.url);
       el.onerror = () => { clearTimeout(timer); setTimeout(() => done(false), 1000); };
       timer = setTimeout(() => done(true), slot.durationSec * 1000);
       stage.replaceChildren(el);
@@ -215,6 +220,7 @@ async function main() {
       continue;
     }
     for (const slot of slots) {
+      if (slot.once && playedOnce.has(slot.creativeId)) continue; // programmatic wins are bought per play
       await show(slot);
       if (!paired || !device) break;
     }

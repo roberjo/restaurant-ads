@@ -1,12 +1,13 @@
 // Pure playlist scheduler: given a venue, candidate campaigns and a time, build one loop.
 
-export type Tier = 'sponsorship' | 'direct' | 'local' | 'programmatic' | 'house';
+export type Tier = 'sponsorship' | 'direct' | 'local' | 'programmatic' | 'rtb' | 'house';
 
 export const TIER_RANK: Record<Tier, number> = {
   sponsorship: 0,
   direct: 1,
   local: 2,
   programmatic: 3,
+  rtb: 3.5, // OpenRTB wins fill whatever network campaigns leave
   house: 4,
 };
 
@@ -55,6 +56,8 @@ export interface Slot {
   url: string;
   type: Creative['type'];
   durationSec: number;
+  /** Play at most once (programmatic wins are bought per play). */
+  once?: boolean;
 }
 
 export interface PlaylistOptions {

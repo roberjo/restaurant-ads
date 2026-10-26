@@ -185,6 +185,35 @@ const MIGRATIONS: string[] = [
   );
   INSERT OR IGNORE INTO settings VALUES ('programmatic_min_quality', '80');
   `,
+  // 4: OpenRTB DOOH gateway
+  `
+  CREATE TABLE ssps (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, endpoint_url TEXT NOT NULL, auth_header_enc TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1, timeout_ms INTEGER NOT NULL DEFAULT 300,
+    floor_cpm_cents INTEGER NOT NULL DEFAULT 300, created_at TEXT NOT NULL
+  );
+  CREATE TABLE rtb_auctions (
+    id TEXT PRIMARY KEY, request_id TEXT NOT NULL, screen_id TEXT NOT NULL, operator_id TEXT NOT NULL, at TEXT NOT NULL,
+    imps INTEGER NOT NULL, bids INTEGER NOT NULL, wins INTEGER NOT NULL, errors INTEGER NOT NULL
+  );
+  CREATE INDEX rtb_auctions_at ON rtb_auctions (at);
+  CREATE TABLE rtb_wins (
+    id TEXT PRIMARY KEY, ssp_id TEXT NOT NULL, request_id TEXT NOT NULL, imp_id TEXT NOT NULL, bid_id TEXT, seat TEXT,
+    screen_id TEXT NOT NULL, operator_id TEXT NOT NULL, venue_id TEXT NOT NULL,
+    price_cpm_micros INTEGER NOT NULL, multiplier REAL NOT NULL,
+    creative_url TEXT NOT NULL, creative_type TEXT NOT NULL, duration_sec REAL NOT NULL,
+    adomain TEXT, crid TEXT, burl TEXT, impression_urls TEXT,
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL, played_at TEXT
+  );
+  CREATE INDEX rtb_wins_screen ON rtb_wins (screen_id, created_at);
+  CREATE TABLE rtb_notices (
+    id TEXT PRIMARY KEY, win_id TEXT NOT NULL, kind TEXT NOT NULL, url TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+    created_at TEXT NOT NULL, sent_at TEXT
+  );
+  ALTER TABLE pop_events ADD COLUMN rtb_win_id TEXT;
+  INSERT OR IGNORE INTO settings VALUES ('rtb_settled_through', '');
+  `,
 ];
 
 function migrate(db: DatabaseSync): void {
@@ -210,10 +239,10 @@ export function getSetting(db: DatabaseSync, key: string): string | null {
 export const nowIso = () => new Date().toISOString();
 
 const JSON_COLS = new Set([
-  'blocked_ad_categories', 'house_creatives', 'geo', 'venue_categories', 'dayparts', 'sections', 'last_status', 'open_hours',
+  'blocked_ad_categories', 'house_creatives', 'geo', 'venue_categories', 'dayparts', 'sections', 'last_status', 'open_hours', 'adomain', 'impression_urls',
 ]);
 const BOOL_COLS = new Set(['network_opt_in', 'audio']);
-const HIDDEN_COLS = new Set(['password_hash', 'secret_hash', 'access_token_enc', 'refresh_token_enc']);
+const HIDDEN_COLS = new Set(['password_hash', 'secret_hash', 'access_token_enc', 'refresh_token_enc', 'auth_header_enc']);
 
 /** snake_case row → camelCase API object, parsing JSON columns. */
 export function toApi<T = any>(row: any): T {

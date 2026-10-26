@@ -17,6 +17,8 @@ export interface Config {
   squareEnvironment?: 'sandbox' | 'production';
   squareWebhookSignatureKey?: string;
   squareWebhookUrl?: string;
+  /** DNS resolution for SSP notice URLs (blocks private addresses); injectable for tests. */
+  resolveHost?: (host: string) => Promise<string[]>;
   /** Outbound HTTP for third-party APIs (Stripe, Square, email); injectable for tests. */
   fetchImpl?: typeof fetch;
 }
