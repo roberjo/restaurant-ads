@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-26
+
+Completes Phase 2's money movement: the platform can now bill operators. Postgres and object storage are deferred until operator count needs them (see roadmap).
+
 ### Added
 - **Operator SaaS billing** (Stripe Billing): per-paired-screen monthly subscription with a free trial, started from Settings → Billing through Stripe Checkout. The subscription quantity follows paired screens with proration (on pairing changes and hourly). Operators manage cards and invoices in the Stripe customer portal.
 - Free tier (default 2 screens) and design-partner comps (`free until` date) managed by the platform admin; the plan price, trial length and free screens are platform settings.
@@ -58,7 +62,8 @@ Phase 1: Operator MVP. See [docs/roadmap.md](docs/roadmap.md).
 ### Security
 - Content-Security-Policy per area (strict for the console, sandboxed for uploads and creatives), `X-Frame-Options: DENY`, `nosniff`, `no-store` on the API, Subresource Integrity on CDN assets.
 
-[Unreleased]: https://github.com/roberjo/restaurant-ads/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/roberjo/restaurant-ads/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/roberjo/restaurant-ads/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/roberjo/restaurant-ads/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/roberjo/restaurant-ads/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/roberjo/restaurant-ads/releases/tag/v0.1.0

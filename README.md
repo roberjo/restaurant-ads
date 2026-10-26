@@ -16,9 +16,11 @@ A platform for running **local in-venue TV ad networks**. Independent operators 
 | [docs/build-journal.md](docs/build-journal.md) | How the project was built, decisions and lessons |
 | [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) | Releases and security policy |
 
-## Status: Phase 2 in progress (v0.2.1)
+## Status: v0.3.0, Phase 2 money movement complete; Phase 3 (pooled programmatic network) next
 
-**New in v0.2.0:** Stripe Connect payouts to operators and venues · Square POS menu sync · ad templates with live preview · venue open hours · Raspberry Pi kiosk with HDMI-CEC TV power control ([scripts/pi](scripts/pi)) · remote screen commands · email notifications · audit log. See the [CHANGELOG](CHANGELOG.md).
+**New in v0.3.0:** operator SaaS billing on Stripe Billing: per-screen subscriptions, trials, a free tier and design-partner comps.
+
+**v0.2.0:** Stripe Connect payouts to operators and venues · Square POS menu sync · ad templates with live preview · venue open hours · Raspberry Pi kiosk with HDMI-CEC TV power control ([scripts/pi](scripts/pi)) · remote screen commands · email notifications · audit log. See the [CHANGELOG](CHANGELOG.md).
 
 ### Phase 1 (v0.1.0)
 
