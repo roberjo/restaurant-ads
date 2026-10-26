@@ -10,6 +10,12 @@ import { assertCanPair, syncQuantitySoon } from '../billing.ts';
 import { email, int, num, oneOf, optStr, str, stringList } from '../validate.ts';
 
 export const SCREEN_MODES = ['menu', 'idle', 'signage'] as const;
+/** OpenOOH venue type IDs look like "entertainment.bars". */
+const venueTypeInput = (v: unknown): string | null => {
+  if (v === undefined || v === null || v === '') return null;
+  if (typeof v !== 'string' || !/^[a-z_]+(\.[a-z_]+)*$/.test(v) || v.length > 80) throw new HttpError(400, 'venueType must be an OpenOOH ID like "entertainment.bars"');
+  return v;
+};
 export const DEVICE_COMMANDS = ['reload', 'identify', 'clear_cache', 'refresh_playlist'] as const;
 export const ONLINE_WINDOW_MS = 5 * 60_000;
 
@@ -70,14 +76,14 @@ export function registerNetwork({ db, router, config }: App): void {
     const id = newId('ven');
     db.prepare(`
       INSERT INTO venues (id, operator_id, name, address, lat, lng, timezone, category, blocked_ad_categories,
-        audience_multiplier, rev_share_pct, open_hours, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        audience_multiplier, rev_share_pct, open_hours, venue_type, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       id, operatorId, str(b.name, 'name'), optStr(b.address, 'address', 300) ?? '',
       num(b.lat, 'lat', -90, 90), num(b.lng, 'lng', -180, 180), validTimezone(b.timezone ?? 'America/Chicago'),
       oneOf(b.category ?? 'qsr', 'category', VENUE_CATEGORIES),
       JSON.stringify(b.blockedAdCategories ? stringList(b.blockedAdCategories, 'blockedAdCategories', AD_CATEGORIES) : ['cannabis']),
       num(b.audienceMultiplier ?? 2, 'audienceMultiplier', 0, 1000), num(b.revSharePct ?? 20, 'revSharePct', 0, 100),
-      b.openHours ? JSON.stringify(parseOpenHours(b.openHours)) : null, nowIso(),
+      b.openHours ? JSON.stringify(parseOpenHours(b.openHours)) : null, venueTypeInput(b.venueType), nowIso(),
     );
     return toApi(db.prepare(`SELECT * FROM venues WHERE id = ?`).get(id));
   });
@@ -99,7 +105,7 @@ export function registerNetwork({ db, router, config }: App): void {
     } else {
       db.prepare(`
         UPDATE venues SET name = ?, address = ?, lat = ?, lng = ?, timezone = ?, category = ?, blocked_ad_categories = ?,
-          audience_multiplier = ?, rev_share_pct = ? WHERE id = ?`).run(
+          audience_multiplier = ?, rev_share_pct = ?, venue_type = ? WHERE id = ?`).run(
         b.name !== undefined ? str(b.name, 'name') : v.name,
         b.address !== undefined ? optStr(b.address, 'address', 300) ?? '' : v.address,
         b.lat !== undefined ? num(b.lat, 'lat', -90, 90) : v.lat,
@@ -109,6 +115,7 @@ export function registerNetwork({ db, router, config }: App): void {
         blocked,
         b.audienceMultiplier !== undefined ? num(b.audienceMultiplier, 'audienceMultiplier', 0, 1000) : v.audience_multiplier,
         b.revSharePct !== undefined ? num(b.revSharePct, 'revSharePct', 0, 100) : v.rev_share_pct,
+        b.venueType !== undefined ? venueTypeInput(b.venueType) : v.venue_type,
         v.id,
       );
     }
@@ -216,10 +223,14 @@ export function registerNetwork({ db, router, config }: App): void {
     const v = venueFor(ctx, user, str(ctx.body.venueId, 'venueId'));
     const mode = oneOf(ctx.body.mode ?? 'idle', 'mode', SCREEN_MODES);
     const id = newId('scr');
-    db.prepare(`INSERT INTO screens VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      id, v.operator_id, v.id, str(ctx.body.name, 'name'), mode,
-      num(ctx.body.adSharePct ?? (mode === 'menu' ? 20 : 40), 'adSharePct', 0, 100),
-      int(ctx.body.loopSec ?? 120, 'loopSec', 30, 900), nowIso(),
+    const b = ctx.body;
+    db.prepare(`INSERT INTO screens (id, operator_id, venue_id, name, mode, ad_share_pct, loop_sec, width_px, height_px, diagonal_in, audio, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id, v.operator_id, v.id, str(b.name, 'name'), mode,
+      num(b.adSharePct ?? (mode === 'menu' ? 20 : 40), 'adSharePct', 0, 100),
+      int(b.loopSec ?? 120, 'loopSec', 30, 900),
+      int(b.widthPx ?? 1920, 'widthPx', 320, 8192), int(b.heightPx ?? 1080, 'heightPx', 240, 8192),
+      b.diagonalIn != null && b.diagonalIn !== '' ? num(b.diagonalIn, 'diagonalIn', 10, 400) : null, b.audio ? 1 : 0, nowIso(),
     );
     return withStatus(db.prepare(`${SCREEN_SELECT} WHERE s.id = ?`).get(id));
   });
@@ -228,11 +239,15 @@ export function registerNetwork({ db, router, config }: App): void {
     const user = requireRole(ctx, 'operator_admin', 'platform_admin');
     const s = screenFor(ctx, user, ctx.params.id);
     const b = ctx.body;
-    db.prepare(`UPDATE screens SET name = ?, mode = ?, ad_share_pct = ?, loop_sec = ? WHERE id = ?`).run(
+    db.prepare(`UPDATE screens SET name = ?, mode = ?, ad_share_pct = ?, loop_sec = ?, width_px = ?, height_px = ?, diagonal_in = ?, audio = ? WHERE id = ?`).run(
       b.name !== undefined ? str(b.name, 'name') : s.name,
       b.mode !== undefined ? oneOf(b.mode, 'mode', SCREEN_MODES) : s.mode,
       b.adSharePct !== undefined ? num(b.adSharePct, 'adSharePct', 0, 100) : s.ad_share_pct,
       b.loopSec !== undefined ? int(b.loopSec, 'loopSec', 30, 900) : s.loop_sec,
+      b.widthPx !== undefined ? int(b.widthPx, 'widthPx', 320, 8192) : s.width_px,
+      b.heightPx !== undefined ? int(b.heightPx, 'heightPx', 240, 8192) : s.height_px,
+      b.diagonalIn !== undefined ? (b.diagonalIn === null || b.diagonalIn === '' ? null : num(b.diagonalIn, 'diagonalIn', 10, 400)) : s.diagonal_in,
+      b.audio !== undefined ? (b.audio ? 1 : 0) : s.audio,
       s.id,
     );
     return withStatus(db.prepare(`${SCREEN_SELECT} WHERE s.id = ?`).get(s.id));

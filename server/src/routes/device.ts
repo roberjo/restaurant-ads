@@ -8,6 +8,7 @@ import { MICROS_PER_CENT, priceImpressions, splitRevenue } from '../ledger.ts';
 import { buildPlaylist, isEligible, type Campaign, type Creative, type Venue } from '../scheduler.ts';
 import type { App } from '../app-types.ts';
 import { powerState } from '../hours.ts';
+import { recordActivity } from '../quality.ts';
 
 const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PAIRING_TTL_MS = 24 * 3600_000;
@@ -144,6 +145,7 @@ export function ingestPop(db: DatabaseSync, device: Device, events: PopEvent[], 
           .run(e.campaignId, MICROS_PER_CENT);
       }
     }
+    recordActivity(db, sc.screen.id, { plays: accepted, rejected }, now);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -206,6 +208,7 @@ export function registerDevice({ db, router }: App): void {
   router.post('/api/device/heartbeat', (ctx) => {
     const d = deviceFromRequest(db, ctx);
     touch(d, ctx.body ?? {});
+    if (d.screenId) recordActivity(db, d.screenId, { heartbeats: 1 });
     const commands = db.prepare(`SELECT id, type, created_at FROM device_commands WHERE device_id = ? AND acked_at IS NULL ORDER BY created_at`)
       .all(d.id).map(toApi);
     return { ok: true, paired: !!d.screenId, commands };

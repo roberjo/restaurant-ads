@@ -24,6 +24,7 @@ const STATUS_BADGE = {
   active: 'ok', online: 'ok', paid: 'ok', ok: 'ok', completed: 'info', invoiced: 'info',
   pending_review: 'warn', unpaid: 'warn', paused: 'warn', unpaired: 'warn', draft: '',
   rejected: 'bad', offline: 'bad', failed: 'bad', awaiting_account: 'warn', below_minimum: '', pending: 'warn',
+  eligible: 'ok', not_eligible: 'warn', allow: 'ok', deny: 'bad',
   trialing: 'ok', comped: 'info', past_due: 'warn', incomplete: 'warn', canceled: 'bad', unpaid: 'bad',
 };
 const badge = (s) => `<span class="badge ${STATUS_BADGE[s] ?? ''}">${esc(label(s))}</span>`;
@@ -316,7 +317,7 @@ function navItems() {
     ['#/advertisers', 'Advertisers'], ['#/reports', 'Reports'], ['#/payouts', 'Payouts'], ['#/audit', 'Audit log'], ['#/settings', 'Settings']];
   if (r === 'operator_admin') return op;
   const admin = [['#/admin/operators', 'Operators'], ['#/admin/network', 'Network campaigns'], ['#/admin/reports', 'Platform report'],
-    ['#/admin/billing', 'Billing'], ['#/admin/payouts', 'Payouts'], ['#/admin/audit', 'Audit log'], ['#/admin/settings', 'Platform settings']];
+    ['#/admin/network-quality', 'Pooled network'], ['#/admin/billing', 'Billing'], ['#/admin/payouts', 'Payouts'], ['#/admin/audit', 'Audit log'], ['#/admin/settings', 'Platform settings']];
   return S.opCtx ? [...admin, ['', `Operator: ${S.opCtx.name}`], ...op] : admin;
 }
 
@@ -357,8 +358,9 @@ const main = (html) => { $('#main').innerHTML = html; };
 
 // ---------- operator: dashboard ----------
 async function dashboardView() {
-  const [fleet, rep, pending] = await Promise.all([
+  const [fleet, rep, pending, quality, forecast] = await Promise.all([
     GET('/api/fleet'), GET(`/api/reports/operator?from=${monthStart()}&to=${today()}`), GET('/api/campaigns?status=pending_review'),
+    GET('/api/quality'), GET('/api/forecast?days=7'),
   ]);
   const s = fleet.summary;
   main(`
@@ -379,7 +381,36 @@ async function dashboardView() {
         <h2>Fleet alerts (${fleet.alerts.length})</h2>
         ${fleet.alerts.length ? `<table>${fleet.alerts.map((a) => `<tr><td>${badge(a.severity === 'high' ? 'offline' : 'unpaired')}</td><td>${esc(a.message)}</td></tr>`).join('')}</table>` : '<div class="empty">All screens online.</div>'}
       </div>
+    </div>
+    <div class="grid cols-2">
+      <div class="card">${qualityCard(quality)}</div>
+      <div class="card">
+        <h2>Ad capacity, next 7 days</h2>
+        <div class="row" style="gap:24px;margin-bottom:8px">
+          <div class="stat"><div class="label">Ad slots (10 s)</div><div class="value">${int(forecast.totals.adSlots)}</div></div>
+          <div class="stat"><div class="label">Est. impressions</div><div class="value">${int(forecast.totals.impressions)}</div></div>
+        </div>
+        ${forecast.byDaypart.length ? `<table><tr><th>Daypart</th><th class="num">Ad slots</th><th class="num">Impressions</th></tr>
+          ${forecast.byDaypart.map((d) => `<tr><td>${esc(d.daypart)}</td><td class="num">${int(d.adSeconds / 10)}</td><td class="num">${int(d.impressions)}</td></tr>`).join('')}</table>`
+          : '<div class="empty">Pair screens to see capacity.</div>'}
+        <p class="small muted">Capacity from venue hours and each screen's ad share. Use it to plan local sales.</p>
+      </div>
     </div>`);
+}
+
+const pct = (n) => (n === null || n === undefined ? '—' : `${n}%`);
+function qualityCard(q) {
+  return `<h2>Programmatic readiness</h2>
+    <div class="row" style="gap:24px;margin-bottom:8px">
+      <div class="stat"><div class="label">Quality score</div><div class="value">${q.score ?? '—'}<span class="small muted"> / 100</span></div></div>
+      <div>${badge(q.eligible ? 'eligible' : 'not_eligible')}<div class="small muted">${esc(q.reason)}</div></div>
+    </div>
+    <table>
+      <tr><td>Uptime during open hours (60%)</td><td class="num">${pct(q.uptimePct)}</td></tr>
+      <tr><td>Venue and screen details complete (20%)</td><td class="num">${pct(q.metadataPct)}</td></tr>
+      <tr><td>Plays passing verification (20%)</td><td class="num">${pct(q.compliancePct)}</td></tr>
+    </table>
+    <p class="small muted">Last 7 days. A score of ${q.minScore}+ unlocks national programmatic demand on your unsold ad time. Set venue hours, venue type and screen sizes to raise it.</p>`;
 }
 
 // ---------- venues ----------
@@ -442,6 +473,9 @@ async function venueView(id) {
         <div class="field"><label>Name</label><input name="name" value="${esc(v.name)}" required></div>
         <div class="field"><label>Address</label><input name="address" value="${esc(v.address)}"></div>
         <div class="field"><label>Category</label><select name="category">${venueCategoryOptions(v.category)}</select></div>
+        <div class="field"><label>Venue type (OpenOOH, for programmatic buyers)</label><input name="venueType" list="venueTypes" value="${esc(v.venueType ?? '')}" placeholder="e.g. entertainment.bars">
+          <datalist id="venueTypes">${['entertainment.qsr', 'entertainment.casual_dining', 'entertainment.bars', 'health_and_beauty.gyms', 'health_and_beauty.salons', 'retail.laundromats', 'retail']
+            .map((t) => `<option value="${t}">`).join('')}</datalist></div>
         <div class="field"><label>Timezone</label><input name="timezone" value="${esc(v.timezone)}"></div>
         <div class="field"><label>Revenue share to venue (%)</label><input name="revSharePct" type="number" min="0" max="100" step="0.5" value="${v.revSharePct}"></div>
         <div class="field"><label>Audience multiplier</label><input name="audienceMultiplier" type="number" min="0" step="0.1" value="${v.audienceMultiplier}"></div>
@@ -580,11 +614,14 @@ async function screensView() {
   main(`
     <h1>Screens</h1>
     <div class="card table-wrap">
-      ${screens.length ? `<table><tr><th>Screen</th><th>Venue</th><th>Mode</th><th class="num">Ad share</th><th>Status</th><th>Last seen</th>${isOp ? '<th></th>' : ''}</tr>
+      ${screens.length ? `<table><tr><th>Screen</th><th>Venue</th><th>Mode</th><th class="num">Ad share</th>${isOp ? '<th>Size</th>' : ''}<th>Status</th><th>Last seen</th>${isOp ? '<th></th>' : ''}</tr>
       ${screens.map((s) => `<tr>
         <td>${esc(s.name)}<div class="small muted">${esc(s.id)}</div></td><td>${esc(s.venueName)}</td>
         <td>${isOp ? `<select data-mode="${s.id}">${['menu', 'idle', 'signage'].map((m) => `<option ${m === s.mode ? 'selected' : ''}>${m}</option>`).join('')}</select>` : esc(s.mode)}</td>
         <td class="num">${isOp ? `<input type="number" min="0" max="100" value="${s.adSharePct}" data-share="${s.id}" style="width:72px">%` : s.adSharePct + '%'}</td>
+        ${isOp ? `<td class="row" style="flex-wrap:nowrap"><input type="number" min="10" max="400" placeholder="in" title="Diagonal (inches)" value="${s.diagonalIn ?? ''}" data-diag="${s.id}" style="width:64px">
+          <select data-res="${s.id}" title="Resolution">${[[1920, 1080], [1080, 1920], [3840, 2160], [2160, 3840], [1280, 720]]
+            .map(([w, h]) => `<option value="${w}x${h}" ${w === s.widthPx && h === s.heightPx ? 'selected' : ''}>${w}×${h}</option>`).join('')}</select></td>` : ''}
         <td>${badge(s.status)}</td><td class="small muted">${s.lastSeenAt ? new Date(s.lastSeenAt).toLocaleString() : '—'}</td>
         ${isOp ? `<td class="row">${s.deviceId ? `<button class="sm" data-cmd="identify" data-screen="${s.id}" title="Show this screen's name on the TV">Identify</button>
           <button class="sm" data-cmd="reload" data-screen="${s.id}">Reload</button><button class="sm" data-unpair="${s.id}">Unpair</button>` : ''}
@@ -625,6 +662,12 @@ async function screensView() {
     const r = await PUT(`/api/screens/${s.dataset.mode}`, { mode: s.value, adSharePct: s.value === 'menu' ? 20 : 40 });
     $(`[data-share="${r.id}"]`).value = r.adSharePct;
     toast('Mode updated');
+  });
+  for (const i of $$('[data-diag]')) i.onchange = act(async () => { await PUT(`/api/screens/${i.dataset.diag}`, { diagonalIn: i.value === '' ? null : Number(i.value) }); toast('Screen size saved'); });
+  for (const sel of $$('[data-res]')) sel.onchange = act(async () => {
+    const [widthPx, heightPx] = sel.value.split('x').map(Number);
+    await PUT(`/api/screens/${sel.dataset.res}`, { widthPx, heightPx });
+    toast('Resolution saved');
   });
   for (const i of $$('[data-share]')) i.onchange = act(async () => { await PUT(`/api/screens/${i.dataset.share}`, { adSharePct: Number(i.value) }); toast('Ad share updated'); });
 }
@@ -970,6 +1013,36 @@ async function adminReportsView() {
     <div class="card table-wrap"><h2>By operator</h2>${moneyTable(r.byOperator, 'name', ['Operator'])}</div>`);
 }
 
+async function adminNetworkQualityView() {
+  const [ops, net] = await Promise.all([GET('/api/admin/quality'), GET('/api/forecast?days=7')]);
+  main(`
+    <h1>Pooled network</h1>
+    <div class="grid cols-4">
+      <div class="card stat"><div class="label">Eligible operators</div><div class="value">${net.operators} / ${ops.length}</div></div>
+      <div class="card stat"><div class="label">Eligible screens</div><div class="value">${int(net.screens)}</div></div>
+      <div class="card stat"><div class="label">Ad slots, next 7 days</div><div class="value">${int(net.totals.adSlots)}</div></div>
+      <div class="card stat"><div class="label">Est. impressions, next 7 days</div><div class="value">${int(net.totals.impressions)}</div></div>
+    </div>
+    <div class="card table-wrap"><h2>Operator quality (last 7 days)</h2>
+      <table><tr><th>Operator</th><th class="num">Screens</th><th class="num">Uptime</th><th class="num">Details</th><th class="num">Verified plays</th><th class="num">Score</th><th>Programmatic</th><th>Override</th></tr>
+      ${ops.map((o) => `<tr><td>${esc(o.name)}${o.networkOptIn ? '' : ' <span class="small muted">(opted out)</span>'}</td><td class="num">${o.pairedScreens}</td>
+        <td class="num">${pct(o.uptimePct)}</td><td class="num">${pct(o.metadataPct)}</td><td class="num">${pct(o.compliancePct)}</td><td class="num">${o.score ?? '—'}</td>
+        <td>${badge(o.eligible ? 'eligible' : 'not_eligible')}<div class="small muted">${esc(o.reason)}</div></td>
+        <td><select data-override="${esc(o.operatorId)}">${[['', 'Automatic'], ['allow', 'Always allow'], ['deny', 'Pause']]
+          .map(([v, l]) => `<option value="${v}" ${(o.override ?? '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td></tr>`).join('')}</table></div>
+    <div class="grid cols-2">
+      <div class="card table-wrap"><h2>Capacity by venue type</h2>${net.byVenueType.length ? `<table><tr><th>Venue type</th><th class="num">Ad slots</th><th class="num">Impressions</th></tr>
+        ${net.byVenueType.map((r) => `<tr><td>${esc(r.venueType)}</td><td class="num">${int(r.adSeconds / 10)}</td><td class="num">${int(r.impressions)}</td></tr>`).join('')}</table>` : '<div class="empty">No eligible screens yet.</div>'}</div>
+      <div class="card table-wrap"><h2>Capacity by daypart</h2>${net.byDaypart.length ? `<table><tr><th>Daypart</th><th class="num">Ad slots</th><th class="num">Impressions</th></tr>
+        ${net.byDaypart.map((r) => `<tr><td>${esc(r.daypart)}</td><td class="num">${int(r.adSeconds / 10)}</td><td class="num">${int(r.impressions)}</td></tr>`).join('')}</table>` : '<div class="empty">No eligible screens yet.</div>'}</div>
+    </div>`);
+  for (const s of $$('[data-override]')) s.onchange = act(async () => {
+    await PUT(`/api/admin/operators/${s.dataset.override}/programmatic`, { override: s.value || null });
+    toast('Saved');
+    adminNetworkQualityView();
+  });
+}
+
 async function adminBillingView() {
   const r = await GET('/api/admin/billing');
   main(`
@@ -1039,6 +1112,7 @@ const ROUTES = [
   [/^#\/reports$/, () => reportsView()],
   [/^#\/settings/, () => settingsView()],
   [/^#\/admin\/billing$/, () => adminBillingView()],
+  [/^#\/admin\/network-quality$/, () => adminNetworkQualityView()],
   [/^#\/payouts$/, () => payoutsView()],
   [/^#\/audit$/, () => auditView()],
   [/^#\/admin\/payouts$/, () => payoutsView(true)],

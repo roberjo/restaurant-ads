@@ -83,6 +83,11 @@ pair/unpair screen ──▶ subscription item quantity = paired screens (prorat
 - **Source of truth:** every `customer.subscription.*` event re-fetches the subscription from Stripe, so out-of-order or replayed events can't regress state. Subscriptions that don't belong to an operator (other products on the same Stripe account) are ignored. Failed payments and trial endings email the operator's admins once per invoice or subscription.
 - Operators manage cards and download invoices in the Stripe customer portal.
 
+## Pooled network readiness
+- **Activity:** each player heartbeat and proof-of-play batch updates `screen_activity` (per screen per UTC hour: heartbeats, verified plays, rejected plays).
+- **Quality score** (`quality.ts`, last 7 days): `0.6 × uptime + 0.2 × metadata + 0.2 × compliance`. Uptime counts only open hours (venue hours) after the device was set up. Metadata checks venue type, hours and address per venue, and diagonal size per screen. Compliance is the share of reported plays that passed verification. Programmatic access requires 24 open screen-hours of history and a score ≥ `programmatic_min_quality` (default 80), unless the platform admin overrides it (`allow` / `deny`).
+- **Forecast** (`forecast.ts`): per open hour, capacity = 3600 s × screen ad share; impressions = ad seconds / 10 s × venue audience multiplier. It's capacity, not net of sold campaigns.
+
 ## Integrations and background jobs
 - **Square:** OAuth (`ITEMS_READ`, `MERCHANT_PROFILE_READ`), HMAC-signed expiring `state`, tokens encrypted with AES-256-GCM using a key derived from `APP_SECRET`, automatic refresh, catalog → menu sections, signed `catalog.version.updated` webhooks, and a 30-minute resync job.
 - **Jobs** (`jobs.ts`, in-process timers): offline-screen alerts (once per outage, only while the venue is open), outbox delivery (Resend, up to 5 attempts), Square resync, billing quantity reconciliation (hourly). They move to a real queue with Postgres in Phase 2b.

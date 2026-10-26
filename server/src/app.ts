@@ -12,6 +12,7 @@ import { registerReports } from './routes/reports.ts';
 import { registerPayouts } from './routes/payouts.ts';
 import { registerIntegrations } from './routes/integrations.ts';
 import { registerBilling } from './routes/billing.ts';
+import { registerProgrammatic } from './routes/programmatic.ts';
 
 export const ROOT = join(import.meta.dirname, '..', '..');
 const MAX_BODY_BYTES = 30 * 1024 * 1024; // base64 creative uploads
@@ -53,6 +54,7 @@ export function createApp(db: DatabaseSync, config: Config): Server {
   registerPayouts(app);
   registerIntegrations(app);
   registerBilling(app);
+  registerProgrammatic(app);
   const staticDirs = { ...STATIC, uploads: config.uploadsDir };
 
   const auditInsert = db.prepare(`INSERT INTO audit_log (at, user_id, operator_id, method, path, status, ip) VALUES (?, ?, ?, ?, ?, ?, ?)`);

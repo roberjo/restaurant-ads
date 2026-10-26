@@ -170,6 +170,21 @@ const MIGRATIONS: string[] = [
   INSERT OR IGNORE INTO settings VALUES ('saas_trial_days', '30');
   INSERT OR IGNORE INTO settings VALUES ('saas_free_screens', '2');
   `,
+  // 3: pooled network readiness (venue/screen metadata, activity for quality scores, programmatic gating)
+  `
+  ALTER TABLE venues ADD COLUMN venue_type TEXT;
+  ALTER TABLE screens ADD COLUMN width_px INTEGER NOT NULL DEFAULT 1920;
+  ALTER TABLE screens ADD COLUMN height_px INTEGER NOT NULL DEFAULT 1080;
+  ALTER TABLE screens ADD COLUMN diagonal_in REAL;
+  ALTER TABLE screens ADD COLUMN audio INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE operators ADD COLUMN programmatic_override TEXT;
+  CREATE TABLE screen_activity (
+    screen_id TEXT NOT NULL, hour TEXT NOT NULL,
+    heartbeats INTEGER NOT NULL DEFAULT 0, plays INTEGER NOT NULL DEFAULT 0, rejected INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (screen_id, hour)
+  );
+  INSERT OR IGNORE INTO settings VALUES ('programmatic_min_quality', '80');
+  `,
 ];
 
 function migrate(db: DatabaseSync): void {
@@ -197,7 +212,7 @@ export const nowIso = () => new Date().toISOString();
 const JSON_COLS = new Set([
   'blocked_ad_categories', 'house_creatives', 'geo', 'venue_categories', 'dayparts', 'sections', 'last_status', 'open_hours',
 ]);
-const BOOL_COLS = new Set(['network_opt_in']);
+const BOOL_COLS = new Set(['network_opt_in', 'audio']);
 const HIDDEN_COLS = new Set(['password_hash', 'secret_hash', 'access_token_enc', 'refresh_token_enc']);
 
 /** snake_case row → camelCase API object, parsing JSON columns. */
@@ -272,9 +287,12 @@ export function seedDemo(db: DatabaseSync): void {
     fri: [['12:00', '02:00']], sat: [['12:00', '02:00']], sun: [['12:00', '22:00']],
   }));
 
-  const screen = db.prepare(`INSERT INTO screens VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-  screen.run('scr_tacos_menu', 'op_austin', 'ven_tacos', 'Menu board (counter)', 'menu', 20, 120, t);
-  screen.run('scr_pub_bar', 'op_austin', 'ven_pub', 'Over the bar', 'idle', 40, 120, t);
+  db.prepare(`UPDATE venues SET venue_type = ? WHERE id = ?`).run('entertainment.qsr', 'ven_tacos');
+  db.prepare(`UPDATE venues SET venue_type = ? WHERE id = ?`).run('entertainment.bars', 'ven_pub');
+  const screen = db.prepare(`INSERT INTO screens (id, operator_id, venue_id, name, mode, ad_share_pct, loop_sec, diagonal_in, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  screen.run('scr_tacos_menu', 'op_austin', 'ven_tacos', 'Menu board (counter)', 'menu', 20, 120, 55, t);
+  screen.run('scr_pub_bar', 'op_austin', 'ven_pub', 'Over the bar', 'idle', 40, 120, 65, t);
 
   db.prepare(`INSERT INTO menus VALUES (?, ?, ?, ?, ?, ?)`).run('ven_tacos', 'op_austin', 'South Congress Tacos', 'dark',
     JSON.stringify([

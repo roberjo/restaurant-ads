@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- **Venue and screen metadata for programmatic buyers:** OpenOOH venue type per venue (defaults from the venue category), and screen resolution, diagonal size and audio.
+- **Operator quality score** (last 7 days): uptime during open hours from hourly player activity (60%), venue/screen details complete (20%), plays passing proof-of-play verification (20%). Operators need 24 open screen-hours of history and a score of at least 80 (a platform setting) to receive programmatic demand. The platform admin can always allow or pause an operator.
+- **Inventory forecast:** ad capacity and impressions for the next 1–30 days by venue type, daypart, venue and day, for each operator and for the pooled network of eligible operators.
+- Console: programmatic readiness and capacity on the operator dashboard, venue type and screen size fields, admin Pooled network page.
+
 ## [0.3.0] - 2026-10-26
 
 Completes Phase 2's money movement: the platform can now bill operators. Postgres and object storage are deferred until operator count needs them (see roadmap).

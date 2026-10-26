@@ -118,6 +118,8 @@ The full plan for building a **platform that lets independent operators run loca
 **Exit:** 5 operators, 150+ screens, automated payouts, less than 1 support ticket per screen per quarter.
 
 ### Phase 3: Pooled network (programmatic)
+
+**Status:** venue/screen metadata, operator quality score with programmatic gating, and inventory forecasting ✅ built (unreleased). OpenRTB gateway in progress.
 - **OpenRTB 2.6 DOOH gateway:** bid requests per eligible slot, with `dooh` object, venue type (OpenOOH taxonomy), impression multiplier and floors; win notices and billing pixels via proof-of-play.
 - Onboard 1–2 SSPs (Vistar, Place Exchange, Hivestack). Typically needs 500–1,000+ screens and good venue metadata.
 - Private marketplace (PMP) deals and network-wide direct campaigns sold by the platform.
