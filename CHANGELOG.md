@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-26
+
+Phase 3 (part 2): selling the pooled network.
+
+### Added
+- **Private marketplace (PMP) deals:** the platform admin registers deal IDs agreed with an SSP. Each deal has a buyer, floor CPM, first-price or fixed-price pricing, optional buyer seats, venue-type and operator targeting, and optional dates.
+  - Matching screens send the deals in `imp.pmp` on every auction.
+  - Deal bids must name an offered deal, meet its floor and come from an allowed seat.
+  - A private deal shuts out open-market bids.
+  - Wins record their deal. Each deal shows plays and gross revenue.
+  - Deals are disabled, not deleted.
+- **Deal avails:** a forecast of the unsold inventory a deal's targeting reaches, for sizing a deal with a buyer.
+- **Forecast net of sold campaigns:** capacity per bucket is now split into sold and available.
+  - Sold time comes from simulating each hour's loop from active campaigns, both the operator's own and opted-in network campaigns, using the real scheduler. Each campaign is capped by its remaining budget.
+  - New fields: `soldSeconds`, `soldImpressions`, `availableSeconds`, `availableImpressions` and `sellThroughPct` per bucket, plus a per-campaign delivery outlook (`byCampaign`) that flags campaigns whose budget runs out within the window.
+  - `GET /api/forecast?venueTypes=` narrows the forecast to venue types. Campaign budgets are still shared with screens outside the filter.
+- Console:
+  - The dashboard capacity card shows sold vs. available, and there's a campaign delivery table.
+  - The Pooled network page shows available inventory and network campaign delivery.
+  - The Programmatic page has deals, with an avails view.
+
+### Changed
+- Forecast days (`byDay`) are now venue-local dates, not UTC dates.
+
 ## [0.4.0] - 2026-10-26
 
 Phase 3 (part 1): the pooled programmatic network.

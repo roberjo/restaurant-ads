@@ -7,15 +7,10 @@ import { renderTemplate } from '../templates.ts';
 import { isOpenAt, parseOpenHours } from '../hours.ts';
 import type { App } from '../app-types.ts';
 import { assertCanPair, syncQuantitySoon } from '../billing.ts';
-import { email, int, num, oneOf, optStr, str, stringList } from '../validate.ts';
+import { email, int, num, oneOf, optStr, str, stringList, venueTypeInput } from '../validate.ts';
 
 export const SCREEN_MODES = ['menu', 'idle', 'signage'] as const;
 /** OpenOOH venue type IDs look like "entertainment.bars". */
-const venueTypeInput = (v: unknown): string | null => {
-  if (v === undefined || v === null || v === '') return null;
-  if (typeof v !== 'string' || !/^[a-z_]+(\.[a-z_]+)*$/.test(v) || v.length > 80) throw new HttpError(400, 'venueType must be an OpenOOH ID like "entertainment.bars"');
-  return v;
-};
 export const DEVICE_COMMANDS = ['reload', 'identify', 'clear_cache', 'refresh_playlist'] as const;
 export const ONLINE_WINDOW_MS = 5 * 60_000;
 

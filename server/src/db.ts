@@ -214,6 +214,17 @@ const MIGRATIONS: string[] = [
   ALTER TABLE pop_events ADD COLUMN rtb_win_id TEXT;
   INSERT OR IGNORE INTO settings VALUES ('rtb_settled_through', '');
   `,
+  // 5: private marketplace (PMP) deals
+  `
+  CREATE TABLE rtb_deals (
+    id TEXT PRIMARY KEY, ssp_id TEXT NOT NULL REFERENCES ssps(id), deal_id TEXT NOT NULL, name TEXT NOT NULL, buyer TEXT,
+    floor_cpm_cents INTEGER NOT NULL, auction_type INTEGER NOT NULL DEFAULT 1, private_auction INTEGER NOT NULL DEFAULT 0,
+    wseats TEXT, venue_types TEXT, operator_ids TEXT, start_date TEXT, end_date TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+    UNIQUE (ssp_id, deal_id)
+  );
+  ALTER TABLE rtb_wins ADD COLUMN deal_id TEXT;
+  `,
 ];
 
 function migrate(db: DatabaseSync): void {
@@ -240,8 +251,9 @@ export const nowIso = () => new Date().toISOString();
 
 const JSON_COLS = new Set([
   'blocked_ad_categories', 'house_creatives', 'geo', 'venue_categories', 'dayparts', 'sections', 'last_status', 'open_hours', 'adomain', 'impression_urls',
+  'wseats', 'venue_types', 'operator_ids',
 ]);
-const BOOL_COLS = new Set(['network_opt_in', 'audio']);
+const BOOL_COLS = new Set(['network_opt_in', 'audio', 'private_auction']);
 const HIDDEN_COLS = new Set(['password_hash', 'secret_hash', 'access_token_enc', 'refresh_token_enc', 'auth_header_enc']);
 
 /** snake_case row → camelCase API object, parsing JSON columns. */
@@ -352,7 +364,7 @@ export function seedDemo(db: DatabaseSync): void {
     JSON.stringify({ lat: 30.26, lng: -97.74, radiusMiles: 5 }), null, JSON.stringify([{ startHour: 16, endHour: 2 }]),
     'alcohol', 20, 1500, 30_000, t);
   creative.run('cr_brewery', 'cmp_brewery', '/creatives/ad-brewery.svg', t);
-  campaign.run('cmp_carwash', null, null, 'National Car Wash Co. (network)', 'programmatic', 'invoiced', `${year}-01-01`, `${year}-12-31`,
+  campaign.run('cmp_carwash', null, null, 'National Car Wash Co.', 'programmatic', 'invoiced', `${year}-01-01`, `${year}-12-31`,
     null, null, null, 'auto', 15, 800, 1_000_000, t);
   creative.run('cr_carwash', 'cmp_carwash', '/creatives/ad-carwash.svg', t);
 

@@ -49,3 +49,10 @@ export function stringList(v: unknown, field: string, allowed: readonly string[]
   for (const x of v) oneOf(x, field, allowed);
   return [...new Set(v as string[])];
 }
+
+/** OpenOOH venue taxonomy ID such as "entertainment.bars"; empty means unset. */
+export function venueTypeInput(v: unknown, field = 'venueType'): string | null {
+  if (v === undefined || v === null || v === '') return null;
+  if (typeof v !== 'string' || !/^[a-z_]+(\.[a-z_]+)*$/.test(v) || v.length > 80) throw new HttpError(400, `${field} must be an OpenOOH ID like "entertainment.bars"`);
+  return v;
+}

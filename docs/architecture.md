@@ -86,7 +86,11 @@ pair/unpair screen ──▶ subscription item quantity = paired screens (prorat
 ## Pooled network readiness
 - **Activity:** each player heartbeat and proof-of-play batch updates `screen_activity` (per screen per UTC hour: heartbeats, verified plays, rejected plays).
 - **Quality score** (`quality.ts`, last 7 days): `0.6 × uptime + 0.2 × metadata + 0.2 × compliance`. Uptime counts only open hours (venue hours) after the device was set up. Metadata checks venue type, hours and address per venue, and diagonal size per screen. Compliance is the share of reported plays that passed verification. Programmatic access requires 24 open screen-hours of history and a score ≥ `programmatic_min_quality` (default 80), unless the platform admin overrides it (`allow` / `deny`).
-- **Forecast** (`forecast.ts`): per open hour, capacity = 3600 s × screen ad share; impressions = ad seconds / 10 s × venue audience multiplier. It's capacity, not net of sold campaigns.
+- **Forecast** (`forecast.ts`): per open hour, capacity = 3600 s × screen ad share; impressions = ad seconds / 10 s × venue audience multiplier.
+  - Sold time comes from running the real scheduler for each screen-hour over its active campaigns: its own campaigns plus network campaigns if the operator opted in.
+  - Each campaign's sold time is then scaled down if its forecast impressions exceed what its remaining budget buys. The scaling assumes even spend, which is an approximation since real spend front-loads.
+  - Available = capacity − sold.
+  - A venue-type filter limits what's reported but still simulates every screen, because they all draw on the same budgets.
 
 ## Programmatic (OpenRTB 2.6 DOOH)
 
@@ -103,6 +107,11 @@ POST /api/device/pop ──▶ verify win (screen, expiry, duration, not yet pla
 - **Notices** (`rtb_notices`) are delivered by a background job every 5 s with retries. URLs resolving to private, loopback or link-local addresses are refused.
 - **Settlement:** SSPs pay the platform 30–60 days after month end. Payout runs include programmatic plays only up to `rtb_settled_through`, which the platform admin sets.
 - SSP credentials are encrypted with `APP_SECRET` and never returned by the API.
+- **PMP deals** (`rtb_deals`):
+  - Deals that are enabled, in date (venue-local) and match the screen's venue type and operator are sent in `imp.pmp` to their SSP, with deal floor, `at` (1 first price, 3 fixed price) and `wseat`.
+  - A bid with `dealid` must name one of those deals, meet its floor and come from an allowed seat. Bids without one use the SSP floor and are refused when any offered deal is private.
+  - The highest valid price still wins each imp; deals aren't otherwise prioritised.
+  - `rtb_wins.deal_id` attributes revenue to the deal.
 
 ## Integrations and background jobs
 - **Square:** OAuth (`ITEMS_READ`, `MERCHANT_PROFILE_READ`), HMAC-signed expiring `state`, tokens encrypted with AES-256-GCM using a key derived from `APP_SECRET`, automatic refresh, catalog → menu sections, signed `catalog.version.updated` webhooks, and a 30-minute resync job.

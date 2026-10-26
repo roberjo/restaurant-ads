@@ -107,6 +107,45 @@ describe('inventory forecast', () => {
     assert.deepEqual(f.byDaypart.map((d) => d.daypart).sort(), ['afternoon', 'breakfast', 'dinner', 'late', 'lunch']);
   });
 
+  test('booked campaigns are netted out of capacity', () => {
+    // Mid-year, so the seeded campaigns (this calendar year) run through the whole window.
+    const june = new Date(`${now.getUTCFullYear()}-06-01T12:00:00Z`);
+    db.prepare(`UPDATE campaigns SET budget_cents = 10000000 WHERE id = 'cmp_dentist'`).run(); // enough for the week
+    const f = forecastInventory(db, ['op_austin'], 7, june);
+    db.prepare(`UPDATE campaigns SET budget_cents = 50000 WHERE id = 'cmp_dentist'`).run();
+    const qsr = f.byVenueType.find((r) => r.venueType === 'entertainment.qsr')!;
+    // Tacos loop: 24 s of ad time; the dentist takes 2 × 10 s (20% SOV cap), alcohol is blocked,
+    // and the 10 s network spot no longer fits in the 4 s left.
+    assert.equal(qsr.soldSeconds, 168 * 30 * 20);
+    assert.equal(qsr.availableSeconds, 168 * 30 * 4);
+    assert.equal(qsr.sellThroughPct, 83.3);
+    assert.equal(f.totals.soldSeconds + f.totals.availableSeconds, f.totals.adSeconds);
+    const dentist = f.byCampaign.find((c) => c.campaignId === 'cmp_dentist')!;
+    assert.equal(dentist.budgetLimited, false);
+    assert.ok(f.byCampaign.some((c) => c.campaignId === 'cmp_carwash' && c.network), 'network spot still plays at the pub');
+  });
+
+  test('sold time is capped by remaining budget', () => {
+    const june = new Date(`${now.getUTCFullYear()}-06-01T12:00:00Z`);
+    const before = forecastInventory(db, ['op_austin'], 7, june);
+    // $500 budget at $12 CPM; leave $1.20 = 100 impressions
+    db.prepare(`UPDATE campaigns SET spent_micros = budget_cents * 10000 - 1200000 WHERE id = 'cmp_dentist'`).run();
+    const f = forecastInventory(db, ['op_austin'], 7, june);
+    const dentist = f.byCampaign.find((c) => c.campaignId === 'cmp_dentist')!;
+    assert.deepEqual([dentist.forecastImpressions, dentist.remainingBudgetImpressions, dentist.budgetLimited], [100, 100, true]);
+    assert.ok(f.totals.availableSeconds > before.totals.availableSeconds);
+    db.prepare(`UPDATE campaigns SET spent_micros = 0 WHERE id = 'cmp_dentist'`).run();
+  });
+
+  test('venue type filter narrows the forecast', () => {
+    const f = forecastInventory(db, ['op_austin'], 7, now, { venueTypes: ['entertainment.bars'] });
+    assert.equal(f.screens, 1);
+    assert.deepEqual(f.byVenueType.map((r) => r.venueType), ['entertainment.bars']);
+    // Campaign budgets are shared with screens outside the filter, so sold time matches the unfiltered forecast.
+    const all = forecastInventory(db, ['op_austin'], 7, now);
+    assert.deepEqual(f.byVenueType[0], all.byVenueType.find((r) => r.venueType === 'entertainment.bars'));
+  });
+
   test('dayparts wrap past midnight', () => {
     assert.equal(daypartOf(23), 'late');
     assert.equal(daypartOf(2), 'late');

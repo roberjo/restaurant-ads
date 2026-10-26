@@ -16,9 +16,11 @@ A platform for running **local in-venue TV ad networks**. Independent operators 
 | [docs/build-journal.md](docs/build-journal.md) | How the project was built, decisions and lessons |
 | [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) | Releases and security policy |
 
-## Status: v0.4.0, Phase 3 (pooled programmatic network) in progress
+## Status: v0.5.0, Phase 3 (pooled programmatic network) in progress
 
-**New in v0.4.0:** OpenRTB 2.6 DOOH gateway (programmatic fill from connected SSPs), operator quality scores that gate programmatic demand, inventory forecasts, OpenOOH venue metadata.
+**New in v0.5.0:** private marketplace (PMP) deals for selling the pooled network to specific buyers, with avails per deal. Inventory forecasts are now net of booked campaigns and include a campaign delivery outlook.
+
+**v0.4.0:** OpenRTB 2.6 DOOH gateway (programmatic fill from connected SSPs), operator quality scores that gate programmatic demand, inventory forecasts, OpenOOH venue metadata.
 
 **v0.3.0:** operator SaaS billing on Stripe Billing: per-screen subscriptions, trials, a free tier and design-partner comps.
 

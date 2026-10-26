@@ -24,7 +24,7 @@ const STATUS_BADGE = {
   active: 'ok', online: 'ok', paid: 'ok', ok: 'ok', completed: 'info', invoiced: 'info',
   pending_review: 'warn', unpaid: 'warn', paused: 'warn', unpaired: 'warn', draft: '',
   rejected: 'bad', offline: 'bad', failed: 'bad', awaiting_account: 'warn', below_minimum: '', pending: 'warn',
-  eligible: 'ok', not_eligible: 'warn', allow: 'ok', deny: 'bad',
+  eligible: 'ok', not_eligible: 'warn', allow: 'ok', deny: 'bad', budget_runs_out: 'warn', private: 'info', open: '',
   trialing: 'ok', comped: 'info', past_due: 'warn', incomplete: 'warn', canceled: 'bad', unpaid: 'bad',
 };
 const badge = (s) => `<span class="badge ${STATUS_BADGE[s] ?? ''}">${esc(label(s))}</span>`;
@@ -388,17 +388,26 @@ async function dashboardView() {
         <h2>Ad capacity, next 7 days</h2>
         <div class="row" style="gap:24px;margin-bottom:8px">
           <div class="stat"><div class="label">Ad slots (10 s)</div><div class="value">${int(forecast.totals.adSlots)}</div></div>
-          <div class="stat"><div class="label">Est. impressions</div><div class="value">${int(forecast.totals.impressions)}</div></div>
+          <div class="stat"><div class="label">Sold</div><div class="value">${pct(forecast.totals.sellThroughPct)}</div></div>
+          <div class="stat"><div class="label">Available slots</div><div class="value">${int(forecast.totals.availableSlots)}</div></div>
         </div>
-        ${forecast.byDaypart.length ? `<table><tr><th>Daypart</th><th class="num">Ad slots</th><th class="num">Impressions</th></tr>
-          ${forecast.byDaypart.map((d) => `<tr><td>${esc(d.daypart)}</td><td class="num">${int(d.adSeconds / 10)}</td><td class="num">${int(d.impressions)}</td></tr>`).join('')}</table>`
-          : '<div class="empty">Pair screens to see capacity.</div>'}
-        <p class="small muted">Capacity from venue hours and each screen's ad share. Use it to plan local sales.</p>
+        ${forecast.byDaypart.length ? capacityTable(forecast.byDaypart, 'daypart', 'Daypart') : '<div class="empty">Pair screens to see capacity.</div>'}
+        <p class="small muted">Capacity from venue hours and each screen's ad share, minus what active campaigns will play. Unsold time goes to network and programmatic demand.</p>
       </div>
-    </div>`);
+    </div>
+    ${forecast.byCampaign.length ? `<div class="card table-wrap"><h2>Campaign delivery, next 7 days</h2>${deliveryTable(forecast.byCampaign)}
+      <p class="small muted">"Budget runs out" means the campaign will spend its budget within the week at the current schedule.</p></div>` : ''}`);
 }
 
 const pct = (n) => (n === null || n === undefined ? '—' : `${n}%`);
+/** Capacity rows (from /api/forecast) as ad slots: total, already sold to campaigns, still available. */
+const capacityTable = (rows, key, heading) => `<table><tr><th>${heading}</th><th class="num">Ad slots</th><th class="num">Sold</th><th class="num">Available slots</th><th class="num">Available impressions</th></tr>
+  ${rows.map((r) => `<tr><td>${esc(r[key])}</td><td class="num">${int(r.adSeconds / 10)}</td><td class="num">${pct(r.sellThroughPct)}</td>
+    <td class="num">${int(r.availableSeconds / 10)}</td><td class="num">${int(r.availableImpressions)}</td></tr>`).join('')}</table>`;
+const deliveryTable = (rows) => `<table><tr><th>Campaign</th><th>Ends</th><th class="num">Forecast impressions</th><th class="num">Budget left (impressions)</th><th></th></tr>
+  ${rows.map((c) => `<tr><td>${esc(c.name)}${c.network ? ' <span class="small muted">(network)</span>' : ''}</td><td>${esc(c.endDate)}</td>
+    <td class="num">${int(c.forecastImpressions)}</td><td class="num">${int(c.remainingBudgetImpressions)}</td>
+    <td>${c.budgetLimited ? badge('budget_runs_out') : ''}</td></tr>`).join('')}</table>`;
 function qualityCard(q) {
   return `<h2>Programmatic readiness</h2>
     <div class="row" style="gap:24px;margin-bottom:8px">
@@ -1024,8 +1033,8 @@ async function adminNetworkQualityView() {
     <div class="grid cols-4">
       <div class="card stat"><div class="label">Eligible operators</div><div class="value">${net.operators} / ${ops.length}</div></div>
       <div class="card stat"><div class="label">Eligible screens</div><div class="value">${int(net.screens)}</div></div>
-      <div class="card stat"><div class="label">Ad slots, next 7 days</div><div class="value">${int(net.totals.adSlots)}</div></div>
-      <div class="card stat"><div class="label">Est. impressions, next 7 days</div><div class="value">${int(net.totals.impressions)}</div></div>
+      <div class="card stat"><div class="label">Available slots, next 7 days</div><div class="value">${int(net.totals.availableSlots)}</div><div class="small muted">of ${int(net.totals.adSlots)} (${pct(net.totals.sellThroughPct)} sold)</div></div>
+      <div class="card stat"><div class="label">Available impressions, next 7 days</div><div class="value">${int(net.totals.availableImpressions)}</div></div>
     </div>
     <div class="card table-wrap"><h2>Operator quality (last 7 days)</h2>
       <table><tr><th>Operator</th><th class="num">Screens</th><th class="num">Uptime</th><th class="num">Details</th><th class="num">Verified plays</th><th class="num">Score</th><th>Programmatic</th><th>Override</th></tr>
@@ -1035,11 +1044,10 @@ async function adminNetworkQualityView() {
         <td><select data-override="${esc(o.operatorId)}">${[['', 'Automatic'], ['allow', 'Always allow'], ['deny', 'Pause']]
           .map(([v, l]) => `<option value="${v}" ${(o.override ?? '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td></tr>`).join('')}</table></div>
     <div class="grid cols-2">
-      <div class="card table-wrap"><h2>Capacity by venue type</h2>${net.byVenueType.length ? `<table><tr><th>Venue type</th><th class="num">Ad slots</th><th class="num">Impressions</th></tr>
-        ${net.byVenueType.map((r) => `<tr><td>${esc(r.venueType)}</td><td class="num">${int(r.adSeconds / 10)}</td><td class="num">${int(r.impressions)}</td></tr>`).join('')}</table>` : '<div class="empty">No eligible screens yet.</div>'}</div>
-      <div class="card table-wrap"><h2>Capacity by daypart</h2>${net.byDaypart.length ? `<table><tr><th>Daypart</th><th class="num">Ad slots</th><th class="num">Impressions</th></tr>
-        ${net.byDaypart.map((r) => `<tr><td>${esc(r.daypart)}</td><td class="num">${int(r.adSeconds / 10)}</td><td class="num">${int(r.impressions)}</td></tr>`).join('')}</table>` : '<div class="empty">No eligible screens yet.</div>'}</div>
-    </div>`);
+      <div class="card table-wrap"><h2>Capacity by venue type</h2>${net.byVenueType.length ? capacityTable(net.byVenueType, 'venueType', 'Venue type') : '<div class="empty">No eligible screens yet.</div>'}</div>
+      <div class="card table-wrap"><h2>Capacity by daypart</h2>${net.byDaypart.length ? capacityTable(net.byDaypart, 'daypart', 'Daypart') : '<div class="empty">No eligible screens yet.</div>'}</div>
+    </div>
+    ${net.byCampaign.some((c) => c.network) ? `<div class="card table-wrap"><h2>Network campaign delivery, next 7 days</h2>${deliveryTable(net.byCampaign.filter((c) => c.network))}</div>` : ''}`);
   for (const s of $$('[data-override]')) s.onchange = act(async () => {
     await PUT(`/api/admin/operators/${s.dataset.override}/programmatic`, { override: s.value || null });
     toast('Saved');
@@ -1048,7 +1056,8 @@ async function adminNetworkQualityView() {
 }
 
 async function adminProgrammaticView() {
-  const [ssps, st] = await Promise.all([GET('/api/admin/ssps'), GET('/api/admin/rtb?days=7')]);
+  const [ssps, st, deals] = await Promise.all([GET('/api/admin/ssps'), GET('/api/admin/rtb?days=7'), GET('/api/admin/deals')]);
+  const sspName = (id) => ssps.find((s) => s.id === id)?.name ?? id;
   const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
   main(`
     <h1>Programmatic (OpenRTB)</h1>
@@ -1074,6 +1083,31 @@ async function adminProgrammaticView() {
         <div class="field"><label>Timeout (ms)</label><input name="timeoutMs" type="number" min="50" max="2000" value="300"></div>
         <div class="field" style="align-self:end"><button class="primary" type="submit">Add SSP</button></div>
       </form></div>
+    <div class="card table-wrap"><h2>Private marketplace deals</h2>
+      <p class="small muted">Sell the pooled network to a specific buyer: create the deal ID with the SSP, then add it here. Matching screens offer it on every auction.</p>
+      ${deals.length ? `<table><tr><th>Deal</th><th>SSP</th><th>Buyer</th><th class="num">Floor CPM</th><th>Type</th><th>Targeting</th><th>Dates</th><th class="num">Played</th><th class="num">Gross</th><th></th></tr>
+      ${deals.map((d) => `<tr><td>${esc(d.name)}<div class="small"><code class="copy">${esc(d.dealId)}</code></div></td><td>${esc(sspName(d.sspId))}</td><td>${esc(d.buyer ?? '—')}${d.wseats ? `<div class="small muted">seats: ${esc(d.wseats.join(', '))}</div>` : ''}</td>
+        <td class="num">${usd(d.floorCpmCents / 100)}${d.auctionType === 3 ? ' fixed' : ''}</td><td>${badge(d.privateAuction ? 'private' : 'open')}</td>
+        <td class="small">${esc(d.venueTypes?.join(', ') ?? 'all venue types')}${d.operatorIds ? `<div class="muted">${d.operatorIds.length} operator(s)</div>` : ''}</td>
+        <td class="small">${d.startDate || d.endDate ? `${esc(d.startDate ?? 'now')} → ${esc(d.endDate ?? 'open')}` : 'any dates'}</td><td class="num">${int(d.played)}</td><td class="num">${usd(d.grossUsd)}</td>
+        <td class="row" style="gap:4px"><button class="sm" data-avails="${esc(d.id)}">Avails</button>
+          <button class="sm" data-deal="${esc(d.id)}" data-on="${d.enabled ? 0 : 1}">${d.enabled ? 'Disable' : 'Enable'}</button></td></tr>`).join('')}</table>`
+        : '<div class="empty">No deals yet.</div>'}
+      <div id="avails"></div>
+      ${ssps.length ? `<h3>Add a deal</h3><form id="deal" class="form-grid">
+        <div class="field"><label>Name</label><input name="name" required placeholder="e.g. QSR lunch — Agency X"></div>
+        <div class="field"><label>SSP</label><select name="sspId">${ssps.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Deal ID (from the SSP)</label><input name="dealId" required></div>
+        <div class="field"><label>Buyer</label><input name="buyer" placeholder="optional"></div>
+        <div class="field"><label>Floor CPM (USD)</label><input name="floor" type="number" min="0" step="0.01" value="8.00" required></div>
+        <div class="field"><label>Pricing</label><select name="auctionType"><option value="1">First price (floor)</option><option value="3">Fixed price</option></select></div>
+        <div class="field"><label>Buyer seats (comma-separated)</label><input name="wseats" placeholder="optional"></div>
+        <div class="field"><label>Venue types (comma-separated)</label><input name="venueTypes" placeholder="all, or e.g. entertainment.qsr, entertainment.bars"></div>
+        <div class="field"><label>Start</label><input name="startDate" type="date"></div>
+        <div class="field"><label>End</label><input name="endDate" type="date"></div>
+        <div class="field"><label><input type="checkbox" name="privateAuction"> Private (only this buyer may bid)</label></div>
+        <div class="field" style="align-self:end"><button class="primary" type="submit">Add deal</button></div>
+      </form>` : ''}</div>
     <div class="card"><h2>Settlement</h2>
       <p class="small muted">SSPs pay the platform after the month closes. Programmatic plays are included in payout runs only up to the date you've been paid through.</p>
       <form id="settled" class="row"><label style="margin:0">SSPs have paid through</label><input type="date" name="settledThrough" value="${esc(st.settledThrough ?? '')}" max="${yesterday}" style="width:auto">
@@ -1086,6 +1120,24 @@ async function adminProgrammaticView() {
     adminProgrammaticView();
   });
   for (const b of $$('[data-toggle]')) b.onclick = act(async () => { await PUT(`/api/admin/ssps/${b.dataset.toggle}`, { enabled: b.dataset.on === '1' }); adminProgrammaticView(); });
+  const list = (v) => (v ? v.split(',').map((x) => x.trim()).filter(Boolean) : null);
+  if ($('#deal')) $('#deal').onsubmit = act(async (e) => {
+    const d = formData(e.target);
+    await POST('/api/admin/deals', {
+      name: d.name, sspId: d.sspId, dealId: d.dealId, buyer: d.buyer || null, floorCpmCents: Math.round(Number(d.floor) * 100),
+      auctionType: Number(d.auctionType), wseats: list(d.wseats), venueTypes: list(d.venueTypes),
+      startDate: d.startDate || null, endDate: d.endDate || null, privateAuction: !!d.privateAuction,
+    });
+    toast('Deal added');
+    adminProgrammaticView();
+  });
+  for (const b of $$('[data-deal]')) b.onclick = act(async () => { await PUT(`/api/admin/deals/${b.dataset.deal}`, { enabled: b.dataset.on === '1' }); adminProgrammaticView(); });
+  for (const b of $$('[data-avails]')) b.onclick = act(async () => {
+    const f = await GET(`/api/admin/deals/${b.dataset.avails}/forecast?days=7`);
+    $('#avails').innerHTML = `<h3>Avails for ${esc(deals.find((d) => d.id === b.dataset.avails).name)}, next 7 days</h3>
+      <p class="small muted">${f.operators} eligible operator(s), ${int(f.screens)} screen(s): ${int(f.totals.availableSlots)} unsold ad slots, ~${int(f.totals.availableImpressions)} impressions.</p>
+      ${f.byDaypart.length ? capacityTable(f.byDaypart, 'daypart', 'Daypart') : ''}`;
+  });
   $('#settled').onsubmit = act(async (e) => { await PUT('/api/admin/rtb/settled', { settledThrough: formData(e.target).settledThrough || null }); toast('Saved'); });
 }
 

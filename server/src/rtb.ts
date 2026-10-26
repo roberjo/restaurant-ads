@@ -4,6 +4,7 @@
 // best bid ≥ floor per imp wins → win notice (nurl) → creative plays once → proof-of-play verifies it →
 // billing notice (burl) and VAST impression pixels fire, and revenue is split like any other play.
 // Programmatic money arrives from SSPs later, so payouts include it only up to the "settled through" date.
+// PMP deals: the platform sells the pooled network to specific buyers through an SSP; matching imps carry `imp.pmp`.
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { randomUUID } from 'node:crypto';
@@ -51,6 +52,32 @@ function programmaticEligible(db: DatabaseSync, operatorId: string, now: Date): 
   return eligible;
 }
 export const clearQualityCache = () => qualityCache.clear();
+
+// ---- PMP deals ----
+const localDate = (tz: string, now: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(now);
+
+/** Enabled deals on this SSP whose dates and targeting (venue types, operators) match the screen. */
+export function dealsFor(db: DatabaseSync, sspId: string, s: RtbScreen, now = new Date()): any[] {
+  const today = localDate(s.venueRow.timezone, now);
+  const vt = venueType(s.venueRow);
+  return (db.prepare(`SELECT * FROM rtb_deals WHERE ssp_id = ? AND enabled = 1`).all(sspId) as any[]).filter((d) => {
+    if ((d.start_date && today < d.start_date) || (d.end_date && today > d.end_date)) return false;
+    const types: string[] | null = d.venue_types ? JSON.parse(d.venue_types) : null;
+    const ops: string[] | null = d.operator_ids ? JSON.parse(d.operator_ids) : null;
+    return (!types?.length || types.includes(vt)) && (!ops?.length || ops.includes(s.operator.id));
+  });
+}
+
+/** OpenRTB `imp.pmp` for the given deals; private if any deal is (open-market bids are then refused). */
+export function pmpObject(deals: any[]) {
+  return {
+    private_auction: deals.some((d) => d.private_auction) ? 1 : 0,
+    deals: deals.map((d) => {
+      const wseat: string[] = d.wseats ? JSON.parse(d.wseats) : [];
+      return { id: d.deal_id, bidfloor: d.floor_cpm_cents / 100, bidfloorcur: 'USD', at: d.auction_type, ...(wseat.length ? { wseat } : {}) };
+    }),
+  };
+}
 
 // ---- Bid request ----
 export function buildBidRequest(s: RtbScreen, imps: number, floorCpm: number, tmaxMs: number, now = new Date()) {
@@ -135,24 +162,37 @@ const MACROS = (price: number, r: { requestId: string; impId: string; bidId: str
   .replaceAll('${AUCTION_ID}', r.requestId).replaceAll('${AUCTION_IMP_ID}', r.impId)
   .replaceAll('${AUCTION_BID_ID}', r.bidId).replaceAll('${AUCTION_SEAT_ID}', r.seat);
 
-interface Candidate { ssp: any; seat: string; bid: any; creative: ParsedCreative }
+interface Candidate { ssp: any; seat: string; bid: any; creative: ParsedCreative; deal: any | null }
 
-/** Valid bids per imp: price ≥ that SSP's floor, no blocked categories, a playable https creative that fits the slot. */
-export function selectWinners(responses: Array<{ ssp: any; body: any }>, request: any): Map<string, Candidate> {
+/**
+ * Valid bids per imp: price ≥ the floor, no blocked categories, a playable https creative that fits the slot.
+ * A bid naming a `dealid` must match a deal offered to that SSP (its floor and buyer seats apply); open-market
+ * bids use the SSP's floor and are refused when any offered deal is private.
+ */
+export function selectWinners(responses: Array<{ ssp: any; body: any; deals?: any[] }>, request: any): Map<string, Candidate> {
   const best = new Map<string, Candidate>();
   const imps = new Map(request.imp.map((i: any) => [i.id, i]));
   const bcat = new Set<string>(request.bcat);
-  for (const { ssp, body } of responses) {
+  for (const { ssp, body, deals = [] } of responses) {
     if (!body || body.id !== request.id || (body.cur && body.cur !== 'USD')) continue;
+    const privateOnly = deals.some((d) => d.private_auction);
     for (const sb of body.seatbid ?? []) {
+      const seat = String(sb.seat ?? '');
       for (const bid of sb.bid ?? []) {
         const imp: any = imps.get(String(bid.impid));
-        if (!imp || !(Number(bid.price) >= ssp.floor_cpm_cents / 100)) continue;
+        if (!imp) continue;
+        let deal = null;
+        if (bid.dealid) {
+          deal = deals.find((d) => d.deal_id === String(bid.dealid));
+          const wseats: string[] = deal?.wseats ? JSON.parse(deal.wseats) : [];
+          if (!deal || (wseats.length && !wseats.includes(seat))) continue;
+          if (!(Number(bid.price) >= deal.floor_cpm_cents / 100)) continue;
+        } else if (privateOnly || !(Number(bid.price) >= ssp.floor_cpm_cents / 100)) continue;
         if ((bid.cat ?? []).some((c: string) => bcat.has(c) || bcat.has(c.split('-')[0]))) continue;
         const creative = parseCreative(String(bid.adm ?? ''), bid.mtype);
         if (!creative || creative.durationSec > RTB_SLOT_SEC + 0.5) continue;
         const cur = best.get(imp.id);
-        if (!cur || Number(bid.price) > Number(cur.bid.price)) best.set(imp.id, { ssp, seat: String(sb.seat ?? ''), bid, creative });
+        if (!cur || Number(bid.price) > Number(cur.bid.price)) best.set(imp.id, { ssp, seat, bid, creative, deal });
       }
     }
   }
@@ -169,16 +209,18 @@ export async function runAuction(db: DatabaseSync, config: Config, s: RtbScreen,
   const request = buildBidRequest(s, imps, 0, Math.max(...ssps.map((x) => x.timeout_ms)), now);
   const f = config.fetchImpl ?? fetch;
   const responses = await Promise.all(ssps.map(async (ssp) => {
+    const deals = dealsFor(db, ssp.id, s, now);
     try {
       const headers: Record<string, string> = { 'content-type': 'application/json', 'x-openrtb-version': '2.6' };
       if (ssp.auth_header_enc && config.appSecret) headers.authorization = decrypt(config.appSecret, ssp.auth_header_enc);
-      const body = { ...request, tmax: ssp.timeout_ms, imp: request.imp.map((i) => ({ ...i, bidfloor: ssp.floor_cpm_cents / 100 })) };
+      const pmp = deals.length ? { pmp: pmpObject(deals) } : {};
+      const body = { ...request, tmax: ssp.timeout_ms, imp: request.imp.map((i) => ({ ...i, bidfloor: ssp.floor_cpm_cents / 100, ...pmp })) };
       const r = await f(ssp.endpoint_url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(ssp.timeout_ms) });
-      if (r.status === 204) return { ssp, body: null, error: null };
-      if (!r.ok) return { ssp, body: null, error: `HTTP ${r.status}` };
-      return { ssp, body: await r.json(), error: null };
+      if (r.status === 204) return { ssp, deals, body: null, error: null };
+      if (!r.ok) return { ssp, deals, body: null, error: `HTTP ${r.status}` };
+      return { ssp, deals, body: await r.json(), error: null };
     } catch (e) {
-      return { ssp, body: null, error: (e as Error).name === 'TimeoutError' ? 'timeout' : (e as Error).message };
+      return { ssp, deals, body: null, error: (e as Error).name === 'TimeoutError' ? 'timeout' : (e as Error).message };
     }
   }));
 
@@ -191,8 +233,8 @@ export async function runAuction(db: DatabaseSync, config: Config, s: RtbScreen,
   const out: Creative[] = [];
   const insertWin = db.prepare(`
     INSERT INTO rtb_wins (id, ssp_id, request_id, imp_id, bid_id, seat, screen_id, operator_id, venue_id, price_cpm_micros, multiplier,
-      creative_url, creative_type, duration_sec, adomain, crid, burl, impression_urls, created_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      creative_url, creative_type, duration_sec, adomain, crid, burl, impression_urls, created_at, expires_at, deal_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const [impId, w] of winners) {
     const id = newId('win');
     const price = Number(w.bid.price);
@@ -201,7 +243,7 @@ export async function runAuction(db: DatabaseSync, config: Config, s: RtbScreen,
     insertWin.run(id, w.ssp.id, request.id, impId, String(w.bid.id ?? ''), w.seat, s.screen.id, s.operator.id, s.venueRow.id,
       Math.round(price * 1_000_000), s.venueRow.audience_multiplier, w.creative.url, w.creative.type, w.creative.durationSec,
       JSON.stringify(w.bid.adomain ?? []), String(w.bid.crid ?? ''), w.bid.burl ? sub(w.bid.burl) : null,
-      JSON.stringify(w.creative.impressions.map(sub)), now.toISOString(), new Date(now.getTime() + exp * 1000).toISOString());
+      JSON.stringify(w.creative.impressions.map(sub)), now.toISOString(), new Date(now.getTime() + exp * 1000).toISOString(), w.deal?.id ?? null);
     if (w.bid.nurl) queueNotice(db, id, 'nurl', sub(w.bid.nurl));
     out.push({ id: `rtb:${id}`, url: w.creative.url, type: w.creative.type, durationSec: w.creative.durationSec });
   }
