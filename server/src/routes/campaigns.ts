@@ -10,6 +10,7 @@ import { renderTemplate } from '../templates.ts';
 import { advertiserEmails, enqueueEmail, operatorAdminEmails, platformAdminEmails } from '../notify.ts';
 import { avgDailyOpenHours } from '../hours.ts';
 import type { App } from '../app-types.ts';
+import { handleBillingEvent } from '../billing.ts';
 import { date, int, num, oneOf, str, stringList } from '../validate.ts';
 
 const EDITABLE = ['draft', 'rejected', 'pending_review'];
@@ -282,7 +283,7 @@ export function registerCampaigns({ db, router, config }: App): void {
     return { url: session.url };
   });
 
-  router.post('/api/stripe/webhook', (ctx) => {
+  router.post('/api/stripe/webhook', async (ctx) => {
     if (!config.stripeWebhookSecret) throw new HttpError(404, 'not found');
     let event: any;
     try {
@@ -290,6 +291,7 @@ export function registerCampaigns({ db, router, config }: App): void {
     } catch (e) {
       throw new HttpError(400, `webhook rejected: ${(e as Error).message}`);
     }
+    if (await handleBillingEvent(db, config, event)) return { received: true };
     if (event.type === 'checkout.session.completed' && event.data?.object?.payment_status === 'paid') {
       const s = event.data.object;
       db.prepare(`UPDATE campaigns SET payment_status = 'paid' WHERE id = ? AND stripe_session_id = ? AND payment_status = 'unpaid'`)

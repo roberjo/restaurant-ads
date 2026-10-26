@@ -71,9 +71,21 @@ card-paid campaign plays ──▶ payout run (platform admin, closed period) �
 - Each payout = earned micros + the previous payout's remainder; it transfers whole cents only if ≥ $1.00, otherwise everything carries forward (`below_minimum`).
 - Transfers use the payout ID as the Stripe idempotency key, so retries can't double-pay. Statuses: `pending → paid | failed | awaiting_account`.
 
+## Operator SaaS billing (Stripe Billing)
+
+```
+operator ──Checkout (mode=subscription, per-screen price, trial)──▶ Stripe ──webhooks──▶ re-fetch subscription ──▶ operators.billing_*
+pair/unpair screen ──▶ subscription item quantity = paired screens (prorated); hourly job reconciles
+```
+- **Plan** (platform settings): price per paired screen per month (default $15), trial days (30), and free screens without a subscription (2). Price changes only apply to new subscriptions.
+- **Design partners:** the platform admin can comp an operator until a date (`free_until`).
+- **Enforcement:** without good standing (`active`, `trialing`, or `past_due` while Stripe retries), pairing beyond the free screens returns `402`. Screens that are already paired **keep playing**, so an operator's billing problem never hurts venues or paying advertisers. Replacing a screen's device is always allowed.
+- **Source of truth:** every `customer.subscription.*` event re-fetches the subscription from Stripe, so out-of-order or replayed events can't regress state. Subscriptions that don't belong to an operator (other products on the same Stripe account) are ignored. Failed payments and trial endings email the operator's admins once per invoice or subscription.
+- Operators manage cards and download invoices in the Stripe customer portal.
+
 ## Integrations and background jobs
 - **Square:** OAuth (`ITEMS_READ`, `MERCHANT_PROFILE_READ`), HMAC-signed expiring `state`, tokens encrypted with AES-256-GCM using a key derived from `APP_SECRET`, automatic refresh, catalog → menu sections, signed `catalog.version.updated` webhooks, and a 30-minute resync job.
-- **Jobs** (`jobs.ts`, in-process timers): offline-screen alerts (once per outage, only while the venue is open), outbox delivery (Resend, up to 5 attempts), Square resync. They move to a real queue with Postgres in Phase 2b.
+- **Jobs** (`jobs.ts`, in-process timers): offline-screen alerts (once per outage, only while the venue is open), outbox delivery (Resend, up to 5 attempts), Square resync, billing quantity reconciliation (hourly). They move to a real queue with Postgres in Phase 2b.
 - **Audit log:** every authenticated non-GET request (including refused ones) is recorded with user, operator, path, status and IP.
 
 ## Devices: commands and power

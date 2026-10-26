@@ -102,7 +102,7 @@ The full plan for building a **platform that lets independent operators run loca
 | Audit log, schema migrations, background jobs | ✅ built |
 | HDMI-CEC power/input control | ✅ via the **Raspberry Pi kit**. Android/Fire TV apps generally can't send CEC, so the Pi is the CEC path. |
 | Android/Fire TV kiosk app | ⏳ next (needs an Android build toolchain in CI) |
-| Operator SaaS billing (Stripe Billing) | ⏳ next |
+| Operator SaaS billing (Stripe Billing) | ✅ built (unreleased): per paired screen, trial, free tier, design-partner comps, prorated quantity sync |
 | Postgres + PostGIS, object storage/CDN | ⏳ next (needed before ~50 operators) |
 | Error tracking, SSO | ⏳ next |
 - **Android/Fire TV kiosk app** (Kotlin wrapper around the web player): auto-boot, device-owner/kiosk mode, HDMI-CEC power and input scheduling, watchdog restart, OTA updates. Includes the **pre-imaged device provisioning** flow.

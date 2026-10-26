@@ -6,6 +6,7 @@ import { saveGeneratedSvg, saveUpload } from '../uploads.ts';
 import { renderTemplate } from '../templates.ts';
 import { isOpenAt, parseOpenHours } from '../hours.ts';
 import type { App } from '../app-types.ts';
+import { assertCanPair, syncQuantitySoon } from '../billing.ts';
 import { email, int, num, oneOf, optStr, str, stringList } from '../validate.ts';
 
 export const SCREEN_MODES = ['menu', 'idle', 'signage'] as const;
@@ -243,6 +244,7 @@ export function registerNetwork({ db, router, config }: App): void {
     const code = str(ctx.body.code, 'code', 4, 12).toUpperCase().replace(/[^A-Z0-9]/g, '');
     const d = db.prepare(`SELECT * FROM devices WHERE pairing_code = ? AND pairing_expires_at > ?`).get(code, nowIso()) as any;
     if (!d) throw new HttpError(404, 'pairing code not found or expired');
+    assertCanPair(db, config, s.operator_id, !!db.prepare(`SELECT 1 FROM devices WHERE screen_id = ?`).get(s.id));
     db.exec('BEGIN');
     try {
       db.prepare(`UPDATE devices SET screen_id = NULL, operator_id = NULL WHERE screen_id = ?`).run(s.id);
@@ -253,6 +255,7 @@ export function registerNetwork({ db, router, config }: App): void {
       db.exec('ROLLBACK');
       throw e;
     }
+    syncQuantitySoon(db, config, s.operator_id);
     return withStatus(db.prepare(`${SCREEN_SELECT} WHERE s.id = ?`).get(s.id));
   });
 
@@ -260,6 +263,7 @@ export function registerNetwork({ db, router, config }: App): void {
     const user = requireRole(ctx, 'operator_admin', 'platform_admin');
     const s = screenFor(ctx, user, ctx.params.id);
     db.prepare(`UPDATE devices SET screen_id = NULL, operator_id = NULL WHERE screen_id = ?`).run(s.id);
+    syncQuantitySoon(db, config, s.operator_id);
     return withStatus(db.prepare(`${SCREEN_SELECT} WHERE s.id = ?`).get(s.id));
   });
 

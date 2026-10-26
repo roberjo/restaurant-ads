@@ -5,6 +5,7 @@ import {
 import { AD_CATEGORIES, VENUE_CATEGORIES, createUser, getSetting, nowIso, toApi } from '../db.ts';
 import { HttpError } from '../http.ts';
 import type { App } from '../app-types.ts';
+import { billingSettings } from '../billing.ts';
 import { email, int, num, optStr, str } from '../validate.ts';
 
 const PUBLIC_OPERATOR_COLS = 'id, slug, name, brand_color, logo_url, default_cpm_cents, min_budget_cents';
@@ -91,14 +92,19 @@ export function registerCore({ db, router, config }: App): void {
 
   router.get('/api/admin/settings', (ctx) => {
     requireRole(ctx, 'platform_admin');
-    return { networkTakePct: Number(getSetting(db, 'network_take_pct')) };
+    return { networkTakePct: Number(getSetting(db, 'network_take_pct')), ...billingSettings(db) };
   });
 
   router.put('/api/admin/settings', (ctx) => {
     requireRole(ctx, 'platform_admin');
-    const pct = num(ctx.body.networkTakePct, 'networkTakePct', 0, 100);
-    db.prepare(`INSERT OR REPLACE INTO settings VALUES ('network_take_pct', ?)`).run(String(pct));
-    return { networkTakePct: pct };
+    const b = ctx.body;
+    const set = db.prepare(`INSERT OR REPLACE INTO settings VALUES (?, ?)`);
+    if (b.networkTakePct !== undefined) set.run('network_take_pct', String(num(b.networkTakePct, 'networkTakePct', 0, 100)));
+    // SaaS price changes apply to new subscriptions; existing ones keep their price.
+    if (b.priceCents !== undefined) set.run('saas_price_cents', String(int(b.priceCents, 'priceCents', 0, 100_000)));
+    if (b.trialDays !== undefined) set.run('saas_trial_days', String(int(b.trialDays, 'trialDays', 0, 365)));
+    if (b.freeScreens !== undefined) set.run('saas_free_screens', String(int(b.freeScreens, 'freeScreens', 0, 1000)));
+    return { networkTakePct: Number(getSetting(db, 'network_take_pct')), ...billingSettings(db) };
   });
 
   // ---- Audit log ----

@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- **Operator SaaS billing** (Stripe Billing): per-paired-screen monthly subscription with a free trial, started from Settings → Billing through Stripe Checkout. The subscription quantity follows paired screens with proration (on pairing changes and hourly). Operators manage cards and invoices in the Stripe customer portal.
+- Free tier (default 2 screens) and design-partner comps (`free until` date) managed by the platform admin; the plan price, trial length and free screens are platform settings.
+- Lapsed billing blocks pairing new screens (`402`) but never stops screens that are already playing.
+- Emails for failed subscription payments and trials ending soon.
+- Platform admin billing page: SaaS MRR, paying and trialing operators, billed screens.
+
 ## [0.2.1] - 2026-10-25
 
 ### Changed

@@ -156,6 +156,20 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (venue_id, provider)
   );
   `,
+  // 2: operator SaaS billing (per paired screen, Stripe Billing)
+  `
+  ALTER TABLE operators ADD COLUMN billing_status TEXT NOT NULL DEFAULT 'none';
+  ALTER TABLE operators ADD COLUMN stripe_customer_id TEXT;
+  ALTER TABLE operators ADD COLUMN stripe_subscription_id TEXT;
+  ALTER TABLE operators ADD COLUMN stripe_subscription_item_id TEXT;
+  ALTER TABLE operators ADD COLUMN billed_screens INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE operators ADD COLUMN billing_price_cents INTEGER;
+  ALTER TABLE operators ADD COLUMN billing_period_end TEXT;
+  ALTER TABLE operators ADD COLUMN free_until TEXT;
+  INSERT OR IGNORE INTO settings VALUES ('saas_price_cents', '1500');
+  INSERT OR IGNORE INTO settings VALUES ('saas_trial_days', '30');
+  INSERT OR IGNORE INTO settings VALUES ('saas_free_screens', '2');
+  `,
 ];
 
 function migrate(db: DatabaseSync): void {

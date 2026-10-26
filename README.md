@@ -67,7 +67,7 @@ Demo logins (password `demo1234`): `admin@platform.test`, `ops@austin.test`, `ta
 | `PUBLIC_URL` | base URL for payment redirects |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | create the first platform admin on an empty database |
 | `SEED_DEMO=1` | seed demo data on an empty database |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | enable advertiser card prepayment (webhook: `POST /api/stripe/webhook`, event `checkout.session.completed`) |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | enable advertiser card prepayment, payouts and operator SaaS billing. Webhook: `POST /api/stripe/webhook` with events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `customer.subscription.trial_will_end`, `invoice.payment_failed`. Enable the Stripe customer portal for operators to manage cards and invoices. |
 | `RESEND_API_KEY`, `EMAIL_FROM` | send notification emails (otherwise they're logged and skipped) |
 | `APP_SECRET` | long random string; encrypts stored POS tokens and signs OAuth state (required for Square) |
 | `SQUARE_APP_ID`, `SQUARE_APP_SECRET`, `SQUARE_ENVIRONMENT` | Square menu sync (`sandbox` or `production`); OAuth redirect URL: `{PUBLIC_URL}/api/square/callback` |
@@ -91,6 +91,7 @@ server/src/
   scheduler.ts      playlist builder (pure)
   ledger.ts         CPM pricing and revenue split (pure, integer micro-dollars)
   payouts.ts        payout runs and Stripe Connect transfers
+  billing.ts        operator SaaS subscriptions (per paired screen, Stripe Billing)
   stripe.ts         Checkout, Connect, webhook signature verification
   square.ts         Square OAuth, catalog → menu mapping, webhook verification
   templates.ts      ad templates (SVG)
@@ -98,7 +99,7 @@ server/src/
   notify.ts         email outbox · jobs.ts background jobs · crypto.ts token encryption
   uploads.ts        content-sniffed creative uploads
   routes/           core (auth/admin/operator/audit) · network (venues/screens/menus/fleet/commands) ·
-                    campaigns · device (pairing/playlist/proof-of-play/power) · reports · payouts · integrations
+                    campaigns · device (pairing/playlist/proof-of-play/power) · reports · payouts · integrations · billing
 console/            role-based web console (no build step)
 player/             web player for TVs, sticks and browsers
 scripts/pi/         Raspberry Pi kiosk + HDMI-CEC installer

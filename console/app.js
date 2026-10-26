@@ -24,6 +24,7 @@ const STATUS_BADGE = {
   active: 'ok', online: 'ok', paid: 'ok', ok: 'ok', completed: 'info', invoiced: 'info',
   pending_review: 'warn', unpaid: 'warn', paused: 'warn', unpaired: 'warn', draft: '',
   rejected: 'bad', offline: 'bad', failed: 'bad', awaiting_account: 'warn', below_minimum: '', pending: 'warn',
+  trialing: 'ok', comped: 'info', past_due: 'warn', incomplete: 'warn', canceled: 'bad', unpaid: 'bad',
 };
 const badge = (s) => `<span class="badge ${STATUS_BADGE[s] ?? ''}">${esc(label(s))}</span>`;
 
@@ -208,6 +209,42 @@ function payoutsTable(rows) {
       <td>${badge(p.status)}${p.error ? `<div class="small muted">${esc(p.error)}</div>` : ''}</td></tr>`).join('')}</table>`;
 }
 
+const BILLING_TEXT = {
+  not_configured: 'Billing is not enabled on this server.',
+  comped: 'Your screens are free during the design-partner period.',
+  none: 'Pair up to FREE screens at no cost. Subscribe to add more.',
+  trialing: 'Free trial: billing starts automatically when the trial ends.',
+  active: 'Subscription active.',
+  past_due: "Your last payment failed and Stripe is retrying. Screens keep playing; update your card to avoid interruption.",
+  unpaid: "Payment failed. Screens keep playing, but you can't add new ones until billing is updated.",
+  canceled: "Subscription canceled. Screens keep playing, but you can't add new ones until you subscribe again.",
+  incomplete: 'The first payment has not completed yet.',
+};
+
+/** Operator SaaS billing: plan state, estimate and Stripe Checkout / customer portal buttons. */
+async function billingCard(el) {
+  const b = await GET('/api/operator/billing');
+  const note = (BILLING_TEXT[b.state] ?? '').replace('FREE', b.freeScreens);
+  const show = b.state !== 'not_configured' && b.state !== 'comped';
+  el.innerHTML = `
+    <div class="row between"><div>${badge(b.state === 'none' ? 'free plan' : b.state)} <span class="muted">${esc(note)}</span></div></div>
+    <div class="grid cols-4" style="margin-top:12px">
+      <div class="stat"><div class="label">Paired screens</div><div class="value">${b.pairedScreens}</div></div>
+      <div class="stat"><div class="label">Price per screen</div><div class="value">${usd(b.unitPriceCents / 100)}<span class="small muted">/mo</span></div></div>
+      <div class="stat"><div class="label">${b.hasSubscription || b.state === 'comped' ? 'Estimated monthly' : 'Monthly if you subscribe'}</div><div class="value">${usd(b.monthlyEstimateCents / 100)}</div></div>
+      <div class="stat"><div class="label">${b.state === 'comped' ? 'Free until' : 'Current period ends'}</div><div class="value small">${
+        b.state === 'comped' ? esc(b.freeUntil) : b.periodEnd ? new Date(b.periodEnd).toLocaleDateString() : '—'}</div></div>
+    </div>
+    ${show ? `<div class="row" style="margin-top:12px">
+      ${b.hasSubscription ? '' : `<button class="primary" id="subscribe">${b.trialDays ? `Start ${b.trialDays}-day free trial` : 'Subscribe'}</button>`}
+      ${b.canManage ? '<button id="portal">Manage billing &amp; invoices</button>' : ''}</div>
+      <p class="small muted">Billed monthly per paired screen and prorated when you add or remove screens. Payments are handled by Stripe.</p>` : ''}`;
+  const sub = $('#subscribe', el);
+  if (sub) sub.onclick = act(async () => { location.href = (await POST('/api/operator/billing/checkout')).url; });
+  const portal = $('#portal', el);
+  if (portal) portal.onclick = act(async () => { location.href = (await POST('/api/operator/billing/portal')).url; });
+}
+
 // ---------- auth ----------
 function logout() {
   if (S.token) fetch('/api/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${S.token}` } }).catch(() => {});
@@ -279,7 +316,7 @@ function navItems() {
     ['#/advertisers', 'Advertisers'], ['#/reports', 'Reports'], ['#/payouts', 'Payouts'], ['#/audit', 'Audit log'], ['#/settings', 'Settings']];
   if (r === 'operator_admin') return op;
   const admin = [['#/admin/operators', 'Operators'], ['#/admin/network', 'Network campaigns'], ['#/admin/reports', 'Platform report'],
-    ['#/admin/payouts', 'Payouts'], ['#/admin/audit', 'Audit log'], ['#/admin/settings', 'Platform settings']];
+    ['#/admin/billing', 'Billing'], ['#/admin/payouts', 'Payouts'], ['#/admin/audit', 'Audit log'], ['#/admin/settings', 'Platform settings']];
   return S.opCtx ? [...admin, ['', `Operator: ${S.opCtx.name}`], ...op] : admin;
 }
 
@@ -567,7 +604,7 @@ async function screensView() {
       <h3>Install</h3>
       <ol class="small muted">
         <li>Plug the player stick into a spare HDMI port and power it from the TV's USB port.</li>
-        <li>Open <code class="copy">${esc(location.origin)}/player/</code> on the device (kiosk app in Phase 2).</li>
+        <li>Open <code class="copy">${esc(location.origin)}/player/</code> on the device, or use the Raspberry Pi kit (<code>scripts/pi</code>) for kiosk mode and automatic TV on/off.</li>
         <li>A 6-character code appears. Enter it above next to the screen and press <b>Pair</b>.</li>
       </ol></div>` : ''}`);
   if (!isOp) return;
@@ -850,7 +887,10 @@ async function settingsView() {
       <div class="checks"><label><input type="checkbox" name="networkOptIn" ${o.networkOptIn ? 'checked' : ''}> Fill unsold time with network and programmatic campaigns</label></div>
       <div style="margin-top:16px"><button class="primary" type="submit">Save settings</button></div>
     </form>
+    <div class="card"><h2>Billing</h2><div id="billing" class="small muted">Loading…</div></div>
     <div class="card"><h2>Payouts</h2><div id="payoutSetup" class="small muted">Loading…</div></div>`);
+  if (location.hash.includes('billing=success')) toast('Subscription started. It can take a few seconds to show here.');
+  billingCard($('#billing')).catch((e) => { $('#billing').innerHTML = `<p class="muted small">${esc(e.message)}</p>`; });
   payoutSetup($('#payoutSetup'), '/api/operator/stripe/status', '/api/operator/stripe/onboard', o.name);
   $('#f').onsubmit = act(async (e) => {
     const d = formData(e.target);
@@ -899,9 +939,22 @@ async function adminSettingsView() {
     <form id="f" class="card">
       <div class="field" style="max-width:320px"><label>Network/programmatic take rate (%)</label><input name="networkTakePct" type="number" min="0" max="100" step="0.5" value="${s.networkTakePct}"></div>
       <p class="small muted">Applied to network campaigns before the venue's revenue share. Local-ad platform fees are set per operator.</p>
+      <h2>Operator SaaS plan</h2>
+      <div class="form-grid">
+        <div class="field"><label>Price per paired screen per month (USD)</label><input name="price" type="number" min="0" step="0.01" value="${(s.priceCents / 100).toFixed(2)}"></div>
+        <div class="field"><label>Free trial (days)</label><input name="trialDays" type="number" min="0" max="365" value="${s.trialDays}"></div>
+        <div class="field"><label>Free screens without a subscription</label><input name="freeScreens" type="number" min="0" value="${s.freeScreens}"></div>
+      </div>
+      <p class="small muted">Price changes apply to new subscriptions. Existing subscribers keep their price.</p>
       <button class="primary" type="submit">Save</button>
     </form>`);
-  $('#f').onsubmit = act(async (e) => { await PUT('/api/admin/settings', { networkTakePct: Number(formData(e.target).networkTakePct) }); toast('Saved'); });
+  $('#f').onsubmit = act(async (e) => {
+    const d = formData(e.target);
+    await PUT('/api/admin/settings', {
+      networkTakePct: Number(d.networkTakePct), priceCents: Math.round(Number(d.price) * 100), trialDays: Number(d.trialDays), freeScreens: Number(d.freeScreens),
+    });
+    toast('Saved');
+  });
 }
 
 async function adminReportsView() {
@@ -915,6 +968,29 @@ async function adminReportsView() {
       <div class="card stat"><div class="label">Venue earnings</div><div class="value">${usd(r.totals.venue)}</div></div>
     </div>
     <div class="card table-wrap"><h2>By operator</h2>${moneyTable(r.byOperator, 'name', ['Operator'])}</div>`);
+}
+
+async function adminBillingView() {
+  const r = await GET('/api/admin/billing');
+  main(`
+    <h1>Operator billing</h1>
+    <div class="grid cols-4">
+      <div class="card stat"><div class="label">SaaS MRR</div><div class="value">${usd(r.totals.mrrCents / 100)}</div></div>
+      <div class="card stat"><div class="label">Paying operators</div><div class="value">${r.totals.payingOperators}</div></div>
+      <div class="card stat"><div class="label">In trial</div><div class="value">${r.totals.trialing}</div></div>
+      <div class="card stat"><div class="label">Billed screens</div><div class="value">${int(r.totals.billedScreens)}</div></div>
+    </div>
+    <div class="card table-wrap"><table><tr><th>Operator</th><th>Status</th><th class="num">Paired</th><th class="num">Billed</th><th class="num">Per screen</th><th>Free until (design partner)</th></tr>
+      ${r.operators.map((o) => `<tr><td>${esc(o.name)}</td><td>${badge(o.state === 'none' ? 'free plan' : o.state)}</td><td class="num">${o.pairedScreens}</td><td class="num">${o.billedScreens}</td>
+        <td class="num">${usd(o.unitPriceCents / 100)}</td>
+        <td class="row"><input type="date" value="${esc(o.freeUntil ?? '')}" data-comp="${esc(o.operatorId)}" style="width:auto"><button class="sm" data-save="${esc(o.operatorId)}">Save</button></td></tr>`).join('')}
+    </table></div>
+    <p class="small muted">Plan: ${usd(r.settings.priceCents / 100)} per paired screen per month, ${r.settings.trialDays}-day trial, ${r.settings.freeScreens} free screens. Change it in Platform settings.</p>`);
+  for (const b of $$('[data-save]')) b.onclick = act(async () => {
+    await PUT(`/api/admin/operators/${b.dataset.save}/billing`, { freeUntil: $(`[data-comp="${b.dataset.save}"]`).value || null });
+    toast('Saved');
+    adminBillingView();
+  });
 }
 
 // ---------- payouts and audit ----------
@@ -961,7 +1037,8 @@ const ROUTES = [
   [/^#\/campaigns\/([^/?]+)/, (id) => campaignView(id)],
   [/^#\/advertisers$/, () => advertisersView()],
   [/^#\/reports$/, () => reportsView()],
-  [/^#\/settings$/, () => settingsView()],
+  [/^#\/settings/, () => settingsView()],
+  [/^#\/admin\/billing$/, () => adminBillingView()],
   [/^#\/payouts$/, () => payoutsView()],
   [/^#\/audit$/, () => auditView()],
   [/^#\/admin\/payouts$/, () => payoutsView(true)],

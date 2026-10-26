@@ -4,6 +4,7 @@ import { ROOT, createApp } from './app.ts';
 import { DEMO_PASSWORD, createUser, isEmpty, openDb, seedDemo } from './db.ts';
 import { startJobs } from './jobs.ts';
 import { syncAllSquareVenues } from './square.ts';
+import { syncAllQuantities } from './billing.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const dataDir = process.env.DATA_DIR ?? join(ROOT, 'data');
@@ -44,7 +45,10 @@ const config = {
 if (config.stripeSecretKey && !config.stripeWebhookSecret) console.warn('STRIPE_SECRET_KEY is set without STRIPE_WEBHOOK_SECRET: card payments will never be confirmed.');
 
 const server = createApp(db, config);
-startJobs(db, config, [{ everyMs: 30 * 60_000, run: () => syncAllSquareVenues(db, config) }]);
+startJobs(db, config, [
+  { everyMs: 30 * 60_000, run: () => syncAllSquareVenues(db, config) },
+  { everyMs: 60 * 60_000, run: () => syncAllQuantities(db, config) },
+]);
 
 server.listen(PORT, () => {
   console.log(`Console: http://localhost:${PORT}/console/   Player: http://localhost:${PORT}/player/`);
